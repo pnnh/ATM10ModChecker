@@ -1,0 +1,40 @@
+# ------------------------------------------------------------------ Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 打包产物（PyInstaller 等）
+build/
+dist/
+*.spec
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# ------------------------------------------------------------------ 运行时产物
+# 临时缓存/实验脚本（仓库根目录）
+/_tmpcache/
+/_*.py
+/_*.txt
+
+# 导出的检测结果
+atm10-modcheck-*.csv
+*.log
+
+# 用户本地配置（正式位置在 %APPDATA%\ATM10ModChecker）
+settings.json
+
+# ------------------------------------------------------------------ 编辑器与系统
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store

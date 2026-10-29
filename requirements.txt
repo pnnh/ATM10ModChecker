@@ -1,0 +1,2 @@
+# Qt for Python：Essentials 子包已包含 QtCore / QtGui / QtWidgets，体积远小于完整 PySide6
+PySide6-Essentials>=6.6
