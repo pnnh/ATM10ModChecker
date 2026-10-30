@@ -199,10 +199,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & "dist\${{ matrix.binary }}" --version
-          if ($LASTEXITCODE -ne 0) { throw "Smoke test failed with exit code $LASTEXITCODE" }
+          # exe 是窗口子系统（--windowed）：用 & 直接调用时 PowerShell 不会等待进程结束，
+          # $LASTEXITCODE 拿不到真实退出码，必须用 Start-Process -Wait -PassThru。
+          $exe = "dist\${{ matrix.binary }}"
           $log = "dist\.ATM10ModChecker\logs\latest.log"
+          $proc = Start-Process -FilePath $exe -ArgumentList "--version" -NoNewWindow -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Smoke test failed with exit code $($proc.ExitCode)" }
           if (-not (Test-Path $log)) { throw "Expected log next to the executable: $log" }
+          Get-Content $log -Tail 5
 
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
