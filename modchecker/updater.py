@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from modchecker.i18n import t
 from modchecker.models import ChangeLevel, ModResult, UpdateState
 from modchecker.net import HttpClient
 
@@ -53,13 +54,12 @@ class ModUpdater:
 
     def update(self, result: ModResult) -> UpdateOutcome:
         if not result.has_update:
-            return UpdateOutcome(result, False, "当前不是“可更新”状态")
+            return UpdateOutcome(result, False, t("update.not_outdated"))
         if not result.download_url:
-            return UpdateOutcome(result, False,
-                                 "该文件没有提供直接下载链接，请到项目页手动下载")
+            return UpdateOutcome(result, False, t("update.no_direct_url"))
         name = Path(result.download_filename or "").name
         if not name.lower().endswith(".jar"):
-            return UpdateOutcome(result, False, f"下载文件名不是 jar：{name or '空'}")
+            return UpdateOutcome(result, False, t("update.bad_filename", name=name or "-"))
 
         old_path = result.jar.path
         target = old_path.with_name(name)
@@ -68,26 +68,27 @@ class ModUpdater:
 
         if target.exists() and target.resolve() != old_path.resolve():
             if result.download_sha1 and _file_sha1(target) == result.download_sha1:
-                return UpdateOutcome(result, True, "目标文件已存在且校验一致",
+                return UpdateOutcome(result, True, t("update.already_downloaded"),
                                      new_path=target, new_filename=target.name,
                                      disabled=target.name.endswith(".disabled"))
-            return UpdateOutcome(result, False, f"目标文件已存在，未覆盖：{target.name}")
+            return UpdateOutcome(result, False, t("update.target_exists", name=target.name))
 
-        self.log(f"下载 {result.title} → {target.name}")
+        self.log(t("update.downloading", title=result.title, name=target.name))
         data = self.http.request("GET", result.download_url, headers={"Accept": "*/*"})
         if result.download_size and len(data) != result.download_size:
-            return UpdateOutcome(
-                result, False, f"文件大小不符（收到 {len(data)} 字节，预期 {result.download_size}）")
+            return UpdateOutcome(result, False,
+                                 t("update.size_mismatch", got=len(data),
+                                   expected=result.download_size))
         actual = _sha1_bytes(data)
         if result.download_sha1 and actual != result.download_sha1:
-            return UpdateOutcome(result, False, f"SHA-1 校验失败（{actual[:12]}…）")
+            return UpdateOutcome(result, False, t("update.sha1_mismatch", sha1=actual[:12]))
 
         tmp = target.with_name(f".{target.name}.part")
         try:
             tmp.write_bytes(data)
         except OSError as exc:
             tmp.unlink(missing_ok=True)
-            return UpdateOutcome(result, False, f"写入临时文件失败：{exc}")
+            return UpdateOutcome(result, False, t("update.write_failed", error=exc))
 
         backup: Path | None = None
         try:
@@ -104,9 +105,10 @@ class ModUpdater:
                     backup.rename(old_path)
                 except OSError:
                     pass
-            return UpdateOutcome(result, False, f"替换文件失败：{exc}")
+            return UpdateOutcome(result, False, t("update.replace_failed", error=exc))
 
-        message = f"已更新；旧文件备份为 {backup.name}" if backup else "已更新"
+        message = (t("update.done_with_backup", name=backup.name) if backup
+                   else t("update.done"))
         return UpdateOutcome(result, True, message, new_path=target,
                              new_filename=target.name,
                              disabled=target.name.endswith(".disabled"))
@@ -115,7 +117,7 @@ class ModUpdater:
 def apply_outcome(result: ModResult, outcome: UpdateOutcome) -> None:
     """把更新结果写回结果对象（必须在主线程调用，避免与表格读取竞争）。"""
     if not outcome.ok:
-        result.note = f"更新失败：{outcome.message}"
+        result.note = t("update.failed_prefix", message=outcome.message)
         return
     if outcome.new_path is not None:
         result.jar.path = outcome.new_path

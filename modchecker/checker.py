@@ -16,6 +16,7 @@ from typing import Callable
 from modchecker import packmeta, scanner, versioning
 from modchecker.appconfig import DEFAULT_GAME_VERSION, DEFAULT_LOADER, cache_dir
 from modchecker.cache import CacheStore
+from modchecker.i18n import t
 from modchecker.models import (InstallInfo, JarEntry, ModResult, OfficialIndex, Origin,
                                PackStatus, Report, Source, UpdateState)
 from modchecker.net import Cancelled, HttpClient
@@ -52,7 +53,7 @@ class _Identity:
     project_url: str = ""
     installed_version: str = ""
     installed_date: datetime | None = None
-    confidence: str = ""
+    confidence: str = ""            # "file" / "name"：仅内部标识，界面文案走 i18n
     cf_project_id: str = ""
     cf_mod: dict | None = None
     cf_file: dict | None = None
@@ -154,18 +155,18 @@ class Checker:
     def _run(self, directory: Path) -> Report:
         options = self.options
         self.progress.plan([
-            ("扫描 mods 目录", 12),
-            ("识别模组来源", 26),
-            ("构建官方模组清单", 24),
-            ("查询最新版本", 32),
-            ("整理检测结果", 6),
+            (t("stage.scan"), 12),
+            (t("stage.identify"), 26),
+            (t("stage.manifest"), 24),
+            (t("stage.versions"), 32),
+            (t("stage.wrapup"), 6),
         ])
         self.progress.enter(0)
         install = scanner.detect_install(directory)
         game_version = options.game_version or install.mc_version or DEFAULT_GAME_VERSION
         loader = (options.loader or install.loader or DEFAULT_LOADER).lower()
-        self.log(f"安装目录：{install.mods_dir}")
-        self.log(f"版本基准：Minecraft {game_version} / {loader}")
+        self.log(t("log.install_dir", path=install.mods_dir))
+        self.log(t("log.version_base", mc=game_version, loader=loader))
 
         sha1_cache = self._sha1_cache()
         jars = scanner.scan_jars(
@@ -178,9 +179,9 @@ class Checker:
         )
         self.cache.sha1_index.set("paths", sha1_cache)
         if not jars:
-            raise RuntimeError(f"mods 目录中没有找到 jar 文件：{install.mods_dir}")
+            raise RuntimeError(t("scan.no_jars", path=install.mods_dir))
         install.jar_total = len(jars)
-        self.log(f"共发现 {len(jars)} 个 jar")
+        self.log(t("log.jar_count", count=len(jars)))
 
         # ---------------- 识别
         self.progress.enter(1)
@@ -214,16 +215,16 @@ class Checker:
         if (options.pack_source is None and report.index and report.index.pack_version
                 and install.pack_version
                 and versioning.compare(report.index.pack_version, install.pack_version) != 0):
-            report.warnings.append(
-                f"官方清单版本（{report.index.pack_version}）与本地整合包版本"
-                f"（{install.pack_version}）不一致，分类结果可能有偏差。")
+            report.warnings.append(t("warn.pack_version_mismatch",
+                                     manifest=report.index.pack_version,
+                                     local=install.pack_version))
         if any(m.jar.disabled for m in results):
-            self.log("注意：包含被禁用的 jar（.jar.disabled）")
+            self.log(t("log.disabled_jars"))
 
         results.sort(key=lambda r: (_STATE_ORDER.get(r.state, 9),
                                     _ORIGIN_ORDER.get(r.origin, 9),
                                     r.title.lower()))
-        self.progress.emit(1, 1, "检测完成")
+        self.progress.emit(1, 1, t("stage.done"))
         return report
 
     # ------------------------------------------------------------------ 识别细节
@@ -251,10 +252,10 @@ class Checker:
                 project_url=f"https://modrinth.com/mod/{project.get('slug')}" if project.get("slug") else "",
                 installed_version=str(version.get("version_number") or ""),
                 installed_date=versioning.parse_iso(version.get("date_published")),
-                confidence="文件哈希匹配",
+                confidence="file",
                 mr_version=version,
             )
-        self.log(f"Modrinth 识别成功 {len(versions)}/{len(hashes)} 个")
+        self.log(t("log.modrinth_identified", hit=len(versions), total=len(hashes)))
 
     def _identify_curseforge(self, jars: list[JarEntry], game_version: str, loader: str,
                              identities: dict[str, _Identity]) -> None:
@@ -263,7 +264,7 @@ class Checker:
         pending = [jar for jar in jars if jar.sha1 and jar.sha1 not in identities]
         if not pending:
             return
-        self.log(f"CurseForge 补全识别：{len(pending)} 个")
+        self.log(t("log.cf_resolve", count=len(pending)))
         total = len(pending)
         done = 0
         errors = 0
@@ -308,8 +309,9 @@ class Checker:
                     cf_file=file,
                 )
         if errors:
-            self.log(f"CurseForge 查询失败 {errors} 个（已跳过）")
-        self.log(f"CurseForge 识别成功 {sum(1 for i in identities.values() if i.source is Source.CURSEFORGE)} 个")
+            self.log(t("log.cf_failures", count=errors))
+        self.log(t("log.cf_identified",
+                   count=sum(1 for i in identities.values() if i.source is Source.CURSEFORGE)))
 
     # ------------------------------------------------------------------ 最新版本
     def _query_results(self, jars: list[JarEntry], identities: dict[str, _Identity],
@@ -356,7 +358,8 @@ class Checker:
         result.origin = origin
         result.origin_detail = detail
         if not detail:
-            result.origin_detail = "未能获取官方清单" if index is None else "无法判断"
+            result.origin_detail = (t("official.origin_unknown_no_index") if index is None
+                                    else t("official.origin_unknown_generic"))
 
     @staticmethod
     def _prerelease_channel(jar: JarEntry) -> bool:
@@ -450,12 +453,13 @@ class Checker:
                     # 分批停顿：CurseForge 未公开额度，连续请求更容易撞 429
                     self._pause(0.8)
                 if error is not None:
-                    self.log(f"CurseForge 最新版本查询失败（{project_id}）：{error}")
+                    self.log(t("log.cf_latest_failed", project=project_id, error=error))
                     for jar in group:
                         failed = self._build_result(jar, identities[jar.sha1], {}, {},
                                                     game_version, loader)
                         failed.state = UpdateState.ERROR
-                        failed.note = f"查询失败：{error}"
+                        failed.note = t("note.query_failed", error=error)
+                        failed.note_is_error = True
                         publish(failed)
                     continue
                 latest_map = {project_id: latest} if latest else {}
@@ -484,10 +488,11 @@ class Checker:
             reason = self._failed_shas.get(jar.sha1 or "")
             if reason:
                 result.state = UpdateState.ERROR
-                result.note = f"查询失败：{reason}"
+                result.note = t("note.query_failed", error=reason)
+                result.note_is_error = True
             else:
                 result.state = UpdateState.UNKNOWN
-                result.note = "Modrinth / CurseForge 均未找到匹配的项目"
+                result.note = t("note.no_project")
             result.installed_version = jar.jar_version
             return result
 
@@ -518,13 +523,13 @@ class Checker:
                         result.installed_version, result.latest_version,
                         game_version, loader, prerelease=prerelease)
                     if prerelease:
-                        result.note = "本地为预发布版本，按 beta/alpha 通道比较"
+                        result.note = t("note.prerelease_channel")
             elif blocked_prerelease:
                 result.state = UpdateState.CURRENT
-                result.note = "最新版本是 beta/alpha，已按稳定通道忽略"
+                result.note = t("note.prerelease_blocked")
             else:
                 result.state = UpdateState.UNKNOWN
-                result.note = f"没有适用于 {game_version} / {loader} 的 Modrinth 版本"
+                result.note = t("note.no_mr_version", mc=game_version, loader=loader)
             return result
 
         # CurseForge
@@ -550,16 +555,16 @@ class Checker:
                     game_version, loader, prerelease=prerelease)
                 notes = []
                 if prerelease:
-                    notes.append("本地为预发布版本，按 beta/alpha 通道比较")
-                if identity.confidence == "项目名匹配":
-                    notes.append("按项目名关联，建议人工确认")
+                    notes.append(t("note.prerelease_channel"))
+                if identity.confidence == "name":
+                    notes.append(t("note.name_match"))
                 result.note = "；".join(notes)
         elif blocked_prerelease:
             result.state = UpdateState.CURRENT
-            result.note = "最新版本是 beta/alpha，已按稳定通道忽略"
+            result.note = t("note.prerelease_blocked")
         else:
             result.state = UpdateState.UNKNOWN
-            result.note = f"没有适用于 {game_version} / {loader} 的 CurseForge 文件"
+            result.note = t("note.no_cf_version", mc=game_version, loader=loader)
         return result
 
     @staticmethod
@@ -645,7 +650,7 @@ class Checker:
         if not pending:
             return
 
-        self.log(f"归属核验：{len(pending)} 个模组不在清单文件名中，改用 CurseForge 项目 ID 判定")
+        self.log(t("log.origin_lookup", count=len(pending)))
         total = len(pending)
         done = 0
 
@@ -660,7 +665,7 @@ class Checker:
         with ThreadPoolExecutor(max_workers=max(1, self.options.concurrency)) as pool:
             for jar, (mod, _file, _confidence) in pool.map(work, pending):
                 done += 1
-                self.progress.emit(done, total, "归属核验")
+                self.progress.emit(done, total, t("stage.origin"))
                 mod_id = str((mod or {}).get("id") or "")
                 if not mod_id or not jar.sha1:
                     continue
@@ -675,22 +680,24 @@ class Checker:
         releases = self.atm.releases()
         status.release_count = len(releases)
         if not releases:
-            status.message = "无法获取 ATM10 发行版列表"
+            status.message = t("pack.no_releases")
             return status
         status.latest = releases[0]
         if install.pack_version:
             status.update_available = versioning.compare(
                 status.latest.version, install.pack_version) > 0
             if status.update_available:
-                status.message = (f"整合包有更新：{install.pack_version} → "
-                                  f"{status.latest.version}（{status.latest.uploaded_at[:10]}）")
+                status.message = t("pack.update_available",
+                                   installed=install.pack_version,
+                                   latest=status.latest.version,
+                                   date=status.latest.uploaded_at[:10])
             elif versioning.compare(status.latest.version, install.pack_version) == 0:
-                status.message = f"整合包已是最新版本 {status.latest.version}"
+                status.message = t("pack.up_to_date", version=status.latest.version)
             else:
-                status.message = (f"本地版本 {install.pack_version} 高于线上最新 "
-                                  f"{status.latest.version}（可能是测试版）")
+                status.message = t("pack.local_newer", installed=install.pack_version,
+                                   latest=status.latest.version)
         else:
-            status.message = f"未能识别整合包版本，线上最新为 {status.latest.version}"
+            status.message = t("pack.version_unknown", latest=status.latest.version)
         return status
 
     def _official_index(self, install: InstallInfo) -> tuple[OfficialIndex | None, list[str]]:
@@ -706,13 +713,14 @@ class Checker:
                 warnings.extend(user_meta.warnings)
                 if (install.pack_version and user_meta.pack_version
                         and versioning.compare(user_meta.pack_version, install.pack_version) != 0):
-                    warnings.append(
-                        f"指定清单的版本（{user_meta.pack_version}）与实例版本"
-                        f"（{install.pack_version}）不一致，归属判断可能有偏差。")
+                    warnings.append(t("warn.specified_version_diff",
+                                      manifest=user_meta.pack_version,
+                                      installed=install.pack_version))
                     # 版本不同时按清单自身版本缓存，避免污染实例版本的缓存
                     version_hint = user_meta.pack_version
-                self.log(f"使用指定的整合包清单：{user_meta.source}，"
-                         f"{len(user_meta.filenames)} 个文件 / {len(user_meta.project_files)} 个项目")
+                self.log(t("log.use_pack_source", source=user_meta.source,
+                           files=len(user_meta.filenames),
+                           projects=len(user_meta.project_files)))
                 merged = packmeta.LocalMetadata()
                 merged.merge(local_meta)      # 本地：补版本 / 加载器等信息
                 merged.merge(user_meta)       # 用户清单：覆盖文件名与项目 ID
@@ -720,23 +728,20 @@ class Checker:
                 merged.path = user_meta.path or merged.path
                 local_meta = merged
                 if _source_overlaps_instance(user_meta.path, install):
-                    warnings.append(
-                        "指定的原包就是当前实例本身（或实例内的目录），其中已经包含手动添加的模组，"
-                        "无法区分归属；建议改选整合包原始 zip 或其解压目录。")
+                    warnings.append(t("warn.specified_overlap"))
             else:
                 warnings.extend(user_meta.warnings or [
-                    f"无法从指定路径读取整合包清单：{self.options.pack_source}"])
-                warnings.append("已退回实例自带的清单或远程官方清单。")
+                    t("warn.specified_unreadable", path=self.options.pack_source)])
+                warnings.append(t("warn.fallback_local"))
         else:
             candidate = packmeta.find_pack_zip(install.game_dir, install.root)
             if candidate is not None:
-                self.log(f"发现疑似整合包归档：{candidate.name}（未自动采用，"
-                         f"如需精确判断请在界面上指定整合包原包）")
+                self.log(t("log.pack_candidate", name=candidate.name))
 
         if not self.options.use_curseforge:
             # 没有 CurseForge 时只能依赖本地清单（文件名 / 哈希 / 项目 ID）
             if not (local_meta.filenames or local_meta.sha1s or local_meta.project_files):
-                warnings.append("未启用 CurseForge，且本机没有可用的整合包清单，无法判断模组归属。")
+                warnings.append(t("warn.no_cf_manifest"))
                 return None, warnings
             return build_official_index(
                 local_meta=local_meta, atm=self.atm, cf=self.curseforge, cache=self.cache,
@@ -755,7 +760,7 @@ class Checker:
         )
         warnings.extend(outcome.warnings)
         if outcome.index is None:
-            warnings.append("无法建立官方模组清单，所有模组归属显示为“未知”。")
+            warnings.append(t("warn.no_index"))
         return outcome.index, warnings
 
     def _local_zip(self) -> Path | None:

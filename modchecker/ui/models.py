@@ -8,6 +8,7 @@ from urllib.parse import quote
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 
+from modchecker.i18n import t
 from modchecker.models import ModResult, Origin, Source, UpdateState
 from modchecker.versioning import compare
 
@@ -15,21 +16,25 @@ from modchecker.versioning import compare
 @dataclass(frozen=True)
 class Column:
     key: str
-    title: str
     width: int
+
+    @property
+    def title(self) -> str:
+        """表头文案随语言变化，因此每次读取时再查文案表。"""
+        return t(f"column.{self.key}")
 
 
 COLUMNS: tuple[Column, ...] = (
-    Column("select", "", 34),
-    Column("state", "状态", 110),
-    Column("title", "模组", 260),
-    Column("origin", "归属", 100),
-    Column("installed", "当前版本", 210),
-    Column("installed_date", "当前发布时间", 120),
-    Column("latest", "最新版本", 210),
-    Column("latest_date", "最新发布时间", 120),
-    Column("source", "来源", 100),
-    Column("filename", "文件名", 300),
+    Column("select", 34),
+    Column("state", 110),
+    Column("title", 260),
+    Column("origin", 100),
+    Column("installed", 210),
+    Column("installed_date", 120),
+    Column("latest", 210),
+    Column("latest_date", 120),
+    Column("source", 100),
+    Column("filename", 300),
 )
 
 _STATE_BRUSH = {
@@ -212,6 +217,13 @@ class ModTableModel(QAbstractTableModel):
             return self._rows[row]
         return None
 
+    def refresh_texts(self) -> None:
+        """语言切换后让表头与所有单元格重新取文案。"""
+        if self._rows:
+            self.dataChanged.emit(self.index(0, 0),
+                                  self.index(len(self._rows) - 1, len(COLUMNS) - 1))
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(COLUMNS) - 1)
+
     @staticmethod
     def _text(result: ModResult, column: str) -> str:
         if column == "select":
@@ -233,7 +245,8 @@ class ModTableModel(QAbstractTableModel):
         if column == "source":
             return result.source_label
         if column == "filename":
-            return result.jar.filename + ("（已禁用）" if result.jar.disabled else "")
+            suffix = t("column.filename_disabled") if result.jar.disabled else ""
+            return result.jar.filename + suffix
         return ""
 
     @staticmethod
@@ -249,33 +262,34 @@ class ModTableModel(QAbstractTableModel):
     def _tooltip(result: ModResult, column: str = "") -> str:
         lines: list[str] = []
         if column == "state" and result.can_update:
-            lines.append("点击可更新到最新版本（会先弹窗确认，操作不可撤销）")
+            lines.append(t("tip.state_click"))
         if column in _LINK_COLUMNS:
             own_url = result.installed_url if column == "installed" else result.latest_url
-            lines.append("点击在浏览器打开版本发布页，查看发版说明" if own_url
-                         else "点击在浏览器打开项目页面 / 站内搜索")
+            lines.append(t("tip.version_link") if own_url else t("tip.version_fallback"))
         if result.state is UpdateState.ERROR and result.note:
-            lines.append(f"失败原因：{result.note}")
-        lines.append(f"文件：{result.jar.filename}")
+            lines.append(t("tip.failure", reason=result.note))
+        lines.append(t("tip.file", name=result.jar.filename))
         if result.project_title:
-            lines.append(f"项目：{result.project_title}")
+            lines.append(t("tip.project", title=result.project_title))
         if result.installed_version:
-            lines.append(f"当前版本：{result.installed_version}")
+            lines.append(t("tip.installed", version=result.installed_version))
         if result.installed_date:
-            lines.append(f"当前发布时间：{result.installed_date.astimezone():%Y-%m-%d %H:%M}")
+            lines.append(t("tip.installed_date",
+                           date=f"{result.installed_date.astimezone():%Y-%m-%d %H:%M}"))
         if result.latest_version:
-            lines.append(f"最新版本：{result.latest_version}")
+            lines.append(t("tip.latest", version=result.latest_version))
         if result.latest_date:
-            lines.append(f"最新发布时间：{result.latest_date.astimezone():%Y-%m-%d %H:%M}")
+            lines.append(t("tip.latest_date",
+                           date=f"{result.latest_date.astimezone():%Y-%m-%d %H:%M}"))
         if result.jar.mod_id:
-            lines.append(f"modId：{result.jar.mod_id}")
+            lines.append(t("tip.mod_id", mod_id=result.jar.mod_id))
         if result.origin_detail:
-            lines.append(f"归属依据：{result.origin_detail}")
-        if result.note and not (result.state is UpdateState.ERROR
-                                and result.note.startswith("查询失败")):
-            lines.append(f"说明：{result.note}")
+            lines.append(t("tip.origin", detail=result.origin_detail))
+        # 失败原因已经在第一行展示过，这里不再重复
+        if result.note and not result.note_is_error:
+            lines.append(t("tip.note", note=result.note))
         if result.project_url:
-            lines.append(f"链接：{result.project_url}")
+            lines.append(t("tip.link", url=result.project_url))
         return "\n".join(lines)
 
 

@@ -14,6 +14,7 @@ import re
 from typing import Callable, Sequence
 
 from modchecker.cache import CacheStore
+from modchecker.i18n import t
 from modchecker.models import JarEntry
 from modchecker.net import HttpClient
 
@@ -127,7 +128,7 @@ class CurseForgeProvider:
 
     @property
     def label(self) -> str:
-        return "CurseForge 官方 API" if self.api_key else "CurseForge 公共代理"
+        return t("provider.cf.official_api" if self.api_key else "provider.cf.proxy")
 
     # ------------------------------------------------------------------ 基础请求
     def _get(self, path: str, params: dict | None = None):
@@ -143,7 +144,7 @@ class CurseForgeProvider:
         try:
             data = self._get(f"/mods/{mod_id}")
         except Exception as exc:
-            self.log(f"CurseForge 项目查询失败（{mod_id}）：{exc}")
+            self.log(t("provider.cf.project_failed", id=mod_id, error=exc))
             return None
         mod = (data or {}).get("data")
         if isinstance(mod, dict):
@@ -159,7 +160,7 @@ class CurseForgeProvider:
         try:
             data = self._get(f"/mods/{mod_id}/files/{file_id}")
         except Exception as exc:
-            self.log(f"CurseForge 文件查询失败（{mod_id}/{file_id}）：{exc}")
+            self.log(t("provider.cf.file_failed", id=mod_id, file=file_id, error=exc))
             return None
         file = (data or {}).get("data")
         if isinstance(file, dict):
@@ -184,7 +185,7 @@ class CurseForgeProvider:
         try:
             data = self._get(f"/mods/{mod_id}/files", params=params)
         except Exception as exc:
-            self.log(f"CurseForge 文件列表查询失败（{mod_id}）：{exc}")
+            self.log(t("provider.cf.files_failed", id=mod_id, error=exc))
             return []
         files = (data or {}).get("data") or []
         if use_cache:
@@ -209,7 +210,7 @@ class CurseForgeProvider:
         try:
             data = self._get("/mods/search", params=params)
         except Exception as exc:
-            self.log(f"CurseForge 搜索失败（{term}）：{exc}")
+            self.log(t("provider.cf.search_failed", term=term, error=exc))
             return []
         hits = (data or {}).get("data") or []
         self.cache.cf_search.set(key, hits)
@@ -235,12 +236,12 @@ class CurseForgeProvider:
                 if score >= 0.7:
                     hit = self._match_files(mod_id, jar, game_version, loader)
                     if hit is not None:
-                        self._remember(jar, candidate, hit, "文件哈希/文件名匹配")
-                        return candidate, hit, "文件哈希/文件名匹配"
+                        self._remember(jar, candidate, hit, "file")
+                        return candidate, hit, "file"
                 if score >= 0.9:
                     # 名称几乎完全一致，但文件不在最近的文件列表中：退化为按项目关联
-                    self._remember(jar, candidate, None, "项目名匹配")
-                    return candidate, None, "项目名匹配"
+                    self._remember(jar, candidate, None, "name")
+                    return candidate, None, "name"
         if jar.sha1:
             self.cache.jar_identity.set(f"cf:{jar.sha1}", {"mod": None})
         return {}, None, ""

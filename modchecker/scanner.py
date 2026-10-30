@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from modchecker import packmeta
+from modchecker.i18n import t
 from modchecker.jarinfo import read_jar_metadata
 from modchecker.models import InstallInfo, InstallKind, JarEntry
 
@@ -123,11 +124,11 @@ def detect_install(selected: Path) -> InstallInfo:
     """根据用户选择的目录推断游戏根目录、mods 目录与版本信息。"""
     root = selected.expanduser().resolve()
     if not root.is_dir():
-        raise ScanError(f"目录不存在：{root}")
+        raise ScanError(t("scan.dir_missing", path=root))
 
     candidates = _mods_candidates(root)
     if not candidates:
-        raise ScanError("在所选目录中没有找到 mods 文件夹（已尝试 mods、.minecraft/mods、minecraft/mods）。")
+        raise ScanError(t("scan.mods_missing"))
 
     # 选择 jar 最多的候选目录
     mods_dir = max(candidates, key=lambda p: len(_jar_files(p, include_disabled=True)))

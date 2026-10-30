@@ -21,6 +21,7 @@ from typing import Callable
 
 from modchecker import packmeta
 from modchecker.cache import CacheStore
+from modchecker.i18n import t
 from modchecker.models import JarEntry, OfficialIndex, Origin
 from modchecker.packmeta import LocalMetadata
 from modchecker.providers.atm10 import Atm10Provider
@@ -111,18 +112,19 @@ def build_official_index(
     if (filenames or sha1s) and (not project_files or covered >= len(project_files) * 0.95):
         index = OfficialIndex(
             pack_version=pack_version, mc_version=mc_version, loader=loader,
-            source=local_meta.source or "本地元数据", filenames=filenames, sha1s=sha1s,
+            source=local_meta.source or t("official.local_source"), filenames=filenames, sha1s=sha1s,
             project_files={str(pid): provided_names.get(pid, "") for pid in project_files},
             declared=max(declared, len(filenames)), resolved=len(filenames),
         )
-        log(f"使用本地整合包清单：{len(filenames)} 个文件 / {len(sha1s)} 个哈希"
-            f"（{local_meta.source or '本地元数据'}），无需联网解析")
+        log(t("official.local_manifest", files=len(filenames), hashes=len(sha1s),
+              source=local_meta.source or t("official.local_source")))
         return IndexOutcome(index=index)
 
     if pack_version:
         cached = _load_cached(cache, pack_version)
         if cached is not None:
-            log(f"复用已缓存的官方清单：ATM10 {cached.pack_version}（{len(cached.filenames)} 个模组）")
+            log(t("official.cached_manifest", version=cached.pack_version,
+                  count=len(cached.filenames)))
             return IndexOutcome(index=cached)
 
     # 2) 需要 manifest 才能补齐 projectID/fileID
@@ -132,7 +134,7 @@ def build_official_index(
             release = atm.latest_release()
             if release and pack_version:
                 outcome.warnings.append(
-                    f"没有找到 ATM10 {pack_version} 的官方发行版，改用最新版 {release.version} 的清单。")
+                    t("official.no_release", version=pack_version, latest=release.version))
         manifest, manifest_source = atm.fetch_manifest(release, local_zip)
         if manifest:
             source_parts.append(manifest_source)
@@ -143,18 +145,18 @@ def build_official_index(
                 # 归档失效时会退而使用其他版本，这里以“实际读到的清单版本”为准
                 if pack_version and manifest_version != pack_version:
                     outcome.warnings.append(
-                        f"ATM10 {pack_version} 的官方归档不可用，已改用 {manifest_version} 的清单，"
-                        f"个别模组可能被误判为“手动添加”。")
+                        t("official.archive_fallback", version=pack_version,
+                          actual=manifest_version))
                 pack_version = manifest_version
             project_files.update(parsed.project_files)
             provided_names.update(parsed.project_names)
             filenames.update(name.lower() for name in parsed.filenames)
             sha1s.update(parsed.sha1s)
             declared = max(declared, len(project_files))
-            log(f"官方清单来源：{manifest_source}，共 {len(project_files)} 个模组"
-                f"（自带文件名 {len(parsed.project_names)} 个）")
+            log(t("official.manifest_source", source=manifest_source,
+                  count=len(project_files), names=len(parsed.project_names)))
         else:
-            outcome.warnings.append("无法获取官方 manifest.json，无法判断模组归属。")
+            outcome.warnings.append(t("official.no_manifest"))
 
     # 3) 通过 CurseForge 把缺失的 projectID/fileID 解析成文件名
     if project_files and use_curseforge:
@@ -188,11 +190,12 @@ def build_official_index(
         return outcome
 
     resolved = sum(1 for pid in project_files if provided_names.get(pid) or display_names.get(pid))
+    source = " + ".join(p for p in source_parts if p)
     index = OfficialIndex(
         pack_version=pack_version,
         mc_version=mc_version,
         loader=loader,
-        source=" + ".join(p for p in source_parts if p) or local_meta.source or "本地元数据",
+        source=source or local_meta.source or t("official.local_source"),
         filenames=filenames,
         sha1s=sha1s,
         project_files={str(pid): provided_names.get(pid) or display_names.get(pid, "")
@@ -203,7 +206,7 @@ def build_official_index(
     )
     if not index.complete:
         outcome.warnings.append(
-            f"官方清单只解析出 {resolved}/{declared} 个文件名，分类结果可能不完整。")
+            t("official.partial", resolved=resolved, declared=declared))
     if pack_version:
         _store(cache, index, pack_version_hint)
     outcome.index = index
@@ -217,11 +220,11 @@ def classify(jar: JarEntry, index: OfficialIndex | None, cf_project_id: str = ""
         return Origin.UNKNOWN, ""
     name = jar.filename.lower()
     if name in index.filenames:
-        return Origin.PACK, "文件名在官方清单中"
+        return Origin.PACK, t("official.origin_filename")
     if jar.sha1 and jar.sha1 in index.sha1s:
-        return Origin.PACK, "文件哈希在官方清单中"
+        return Origin.PACK, t("official.origin_hash")
     if cf_project_id and str(cf_project_id) in index.project_files:
-        return Origin.PACK, "项目 ID 在官方清单中"
+        return Origin.PACK, t("official.origin_project")
     if index.filenames:
-        return Origin.MANUAL, "官方清单中不存在"
+        return Origin.MANUAL, t("official.origin_missing")
     return Origin.UNKNOWN, ""

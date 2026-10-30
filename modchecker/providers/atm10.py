@@ -10,6 +10,7 @@ from typing import Callable
 from modchecker import packmeta
 from modchecker.appconfig import ATM10_CF_ID, ATM10_SLUG
 from modchecker.cache import CacheStore
+from modchecker.i18n import t
 from modchecker.models import PackRelease
 from modchecker.net import HttpClient
 from modchecker.providers.curseforge import CurseForgeProvider
@@ -53,7 +54,7 @@ class Atm10Provider:
         try:
             data = self.http.get_json(CFWIDGET_URL)
         except Exception as exc:
-            self.log(f"获取 ATM10 发行版列表失败：{exc}")
+            self.log(t("provider.atm10.release_failed", error=exc))
             return []
         items: list[PackRelease] = []
         for entry in (data or {}).get("files") or []:
@@ -143,7 +144,7 @@ class Atm10Provider:
             manifest = packmeta.read_manifest_from_zip(local_zip)
             if manifest:
                 return manifest, f"本地整合包 zip（{local_zip.name}）"
-            self.log(f"本地 zip 中没有找到 manifest.json：{local_zip}")
+            self.log(t("provider.atm10.no_local_manifest", path=local_zip))
 
         targets = self._manifest_targets(release)
         if not targets:
@@ -154,16 +155,17 @@ class Atm10Provider:
                 try:
                     manifest = RemoteZip(self.http, url).read_json(("manifest.json",))
                 except (RemoteZipError, OSError, ValueError) as exc:
-                    self.log(f"读取远端整合包清单失败（ATM10 {target.version}）：{exc}")
+                    self.log(t("provider.atm10.remote_manifest_failed", version=target.version, error=exc))
                     continue
                 except Exception as exc:  # 网络/解析异常都换下一个候选
-                    self.log(f"读取远端整合包清单失败（ATM10 {target.version}）：{exc}")
+                    self.log(t("provider.atm10.remote_manifest_failed", version=target.version, error=exc))
                     continue
                 if not manifest:
                     continue
                 if substitute:
-                    return manifest, (f"ATM10 {target.version} 官方包（代替无可用归档的 "
-                                      f"{release.version if release else '?'}）")
+                    return manifest, t("provider.atm10.substitute_manifest",
+                                       actual=target.version,
+                                       wanted=release.version if release else '?')
                 return manifest, f"ATM10 {release.version if release else target.version} 官方包（远程读取）"
         return None, ""
 

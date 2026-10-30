@@ -10,6 +10,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from modchecker.i18n import t
+
 USER_AGENT = "ATM10-ModChecker/1.0 (open-source desktop tool)"
 
 
@@ -124,7 +126,7 @@ class HttpClient:
                 last_exc = HttpError(0, url, str(exc.reason))
                 self._sleep_backoff(attempt)
             except TimeoutError as exc:
-                last_exc = HttpError(0, url, "请求超时")
+                last_exc = HttpError(0, url, t("net.timeout"))
                 self._sleep_backoff(attempt)
         assert last_exc is not None
         raise last_exc

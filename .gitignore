@@ -28,8 +28,9 @@ env/
 atm10-modcheck-*.csv
 *.log
 
-# 用户本地配置（正式位置在 %APPDATA%\ATM10ModChecker）
-settings.json
+# 用户本地数据（设置 / 缓存 / 日志）：源码运行时生成在仓库根目录
+.ATM10ModChecker/
+logs/
 
 # ------------------------------------------------------------------ 编辑器与系统
 .idea/

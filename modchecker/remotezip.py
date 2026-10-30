@@ -11,6 +11,7 @@ import struct
 import zipfile
 import zlib
 
+from modchecker.i18n import t
 from modchecker.net import HttpClient
 
 _EOCD_SIG = b"PK\x05\x06"
@@ -37,7 +38,7 @@ class RemoteZip:
             return self._entries
         self._size = self.http.content_length(self.url)
         if self._size <= 0:
-            raise RemoteZipError("无法获取整合包体积")
+            raise RemoteZipError(t("remotezip.size_unknown"))
 
         tail = b""
         eocd_pos = -1
@@ -50,14 +51,14 @@ class RemoteZip:
                 offset = self._size - size
                 break
         if eocd_pos < 0:
-            raise RemoteZipError("未找到 zip 中央目录（可能不是标准 zip）")
+            raise RemoteZipError(t("remotezip.no_central_directory"))
 
         eocd = tail[eocd_pos:eocd_pos + 22]
         if len(eocd) < 22:
-            raise RemoteZipError("zip 结构异常")
+            raise RemoteZipError(t("remotezip.broken"))
         _, _, _, _, total, cd_size, cd_off, _ = struct.unpack("<IHHHHIIH", eocd)
         if cd_off == 0xFFFFFFFF or total == 0xFFFF:
-            raise RemoteZipError("不支持 ZIP64 整合包")
+            raise RemoteZipError(t("remotezip.zip64"))
 
         cd_start_in_tail = cd_off - offset
         if cd_start_in_tail >= 0:
@@ -76,7 +77,7 @@ class RemoteZip:
             entries[name] = (method, csize, usize, lho)
             cursor += 46 + nlen + elen + clen
         if not entries:
-            raise RemoteZipError("中央目录解析失败")
+            raise RemoteZipError(t("remotezip.central_directory_failed"))
         self._entries = entries
         return entries
 
@@ -108,7 +109,7 @@ class RemoteZip:
                 return payload
             if method == 8:
                 return zlib.decompress(payload, -15)
-            raise RemoteZipError(f"不支持的压缩方式 {method}")
+            raise RemoteZipError(t("remotezip.unsupported_method", method=method))
         return None
 
     def read_json(self, names: tuple[str, ...] | list[str]):

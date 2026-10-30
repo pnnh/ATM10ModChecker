@@ -18,6 +18,8 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from modchecker.i18n import t
+
 _METADATA_FILES = ("manifest.json", "minecraftinstance.json", "modlist.html",
                    "mmc-pack.json", "instance.cfg")
 
@@ -104,7 +106,7 @@ def manifest_metadata(data, source: str, path: Path | None = None) -> LocalMetad
     """
     meta = LocalMetadata(source=source, path=path)
     if not isinstance(data, dict):
-        meta.warnings.append(f"无法解析 {path or source}")
+        meta.warnings.append(t("packmeta.unparsable", path=path or source))
         return meta
     meta.pack_name = str(data.get("name") or "")
     meta.pack_version = str(data.get("version") or "")
@@ -144,7 +146,7 @@ def parse_minecraftinstance(path: Path) -> LocalMetadata:
     data = _read_json(path)
     meta = LocalMetadata(source="minecraftinstance.json", path=path)
     if not isinstance(data, dict):
-        meta.warnings.append(f"无法解析 {path}")
+        meta.warnings.append(t("packmeta.unparsable", path=path))
         return meta
     pack = data.get("installedModpack") if isinstance(data.get("installedModpack"), dict) else {}
     meta.pack_name = str(pack.get("name") or "")
@@ -241,11 +243,11 @@ def read_manifest_from_zip(path: Path) -> dict | None:
 
 
 def parse_manifest_from_zip(path: Path) -> LocalMetadata:
-    source = f"整合包 zip（{path.name}）"
+    source = t("packmeta.zip_source", name=path.name)
     data = read_manifest_from_zip(path)
     if data is None:
         return LocalMetadata(source=source, path=path,
-                             warnings=[f"zip 中没有找到可用的 manifest.json：{path}"])
+                             warnings=[t("packmeta.zip_no_manifest", path=path)])
     return manifest_metadata(data, source, path)
 
 
@@ -271,14 +273,15 @@ def load_pack_reference(selected: Path | str) -> LocalMetadata:
             return parse_curse_manifest(path)
         if zipfile.is_zipfile(path):
             return parse_manifest_from_zip(path)
-        return LocalMetadata(path=path, warnings=[f"既不是 zip 也不是 manifest.json：{path}"])
+        return LocalMetadata(path=path,
+                             warnings=[t("packmeta.not_zip_or_manifest", path=path)])
     if not path.is_dir():
-        return LocalMetadata(path=path, warnings=[f"指定的整合包路径不存在：{path}"])
+        return LocalMetadata(path=path, warnings=[t("packmeta.path_missing", path=path)])
 
     for manifest in _manifest_candidates(path):
         meta = parse_curse_manifest(manifest)
         if meta.project_files or meta.filenames:
-            meta.source = f"解压目录（{path.name}）"
+            meta.source = t("packmeta.extracted_dir", name=path.name)
             return meta
 
     # 没有 manifest.json 时，解压目录里的 mods/*.jar 本身就是最精确的官方文件列表
@@ -289,8 +292,8 @@ def load_pack_reference(selected: Path | str) -> LocalMetadata:
         if mods_dir.is_dir():
             jars.extend(item.name for item in sorted(mods_dir.glob("*.jar")) if item.is_file())
     if jars:
-        source = (f"mods 目录（{path.name}）" if path.name.lower() == "mods"
-                  else f"解压目录（{path.name}/mods）")
+        source = (t("packmeta.mods_dir", name=path.name) if path.name.lower() == "mods"
+                  else t("packmeta.extracted_mods", name=path.name))
         return LocalMetadata(
             source=source, path=path,
             filenames={name: "" for name in jars},
@@ -301,11 +304,10 @@ def load_pack_reference(selected: Path | str) -> LocalMetadata:
     if modlist.is_file():
         meta = parse_modlist_html(modlist)
         if meta.filenames:
-            meta.source = f"解压目录（{path.name}/modlist.html）"
+            meta.source = t("packmeta.extracted_mods", name=f"{path.name}/modlist.html")
             return meta
 
-    return LocalMetadata(path=path,
-                         warnings=[f"目录中没有找到 manifest.json 或 mods/*.jar：{path}"])
+    return LocalMetadata(path=path, warnings=[t("packmeta.no_manifest", path=path)])
 
 
 def find_pack_zip(*roots: Path) -> Path | None:

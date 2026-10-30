@@ -9,7 +9,10 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from modchecker.checker import CheckOptions, Checker
+from modchecker.logging_setup import get_logger
 from modchecker.net import Cancelled
+
+log = get_logger("worker")
 
 
 class CheckWorker(QThread):
@@ -43,8 +46,10 @@ class CheckWorker(QThread):
             )
             report = self._checker.run(self._directory)
         except Cancelled:
+            log.info("检测已取消")
             self.cancelled.emit()
         except Exception as exc:  # 意外错误带上堆栈，便于排查
+            log.exception("检测线程异常退出")
             self.log.emit(traceback.format_exc(limit=4))
             self.failed.emit(str(exc))
         else:

@@ -7,6 +7,8 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+from modchecker.i18n import t
+
 
 class InstallKind(str, Enum):
     CLIENT = "client"
@@ -48,29 +50,35 @@ class ChangeLevel(str, Enum):
 SOURCE_LABELS = {
     Source.MODRINTH: "Modrinth",
     Source.CURSEFORGE: "CurseForge",
-    Source.NONE: "未识别",
+    Source.NONE: "source.none",
 }
 
 ORIGIN_LABELS = {
-    Origin.PACK: "整合包自带",
-    Origin.MANUAL: "手动添加",
-    Origin.UNKNOWN: "未知",
+    Origin.PACK: "origin.pack",
+    Origin.MANUAL: "origin.manual",
+    Origin.UNKNOWN: "origin.unknown",
 }
 
 STATE_LABELS = {
-    UpdateState.OUTDATED: "可更新",
-    UpdateState.CURRENT: "已最新",
-    UpdateState.UNKNOWN: "未知",
-    UpdateState.ERROR: "查询失败",
+    UpdateState.OUTDATED: "state.outdated",
+    UpdateState.CURRENT: "state.current",
+    UpdateState.UNKNOWN: "state.unknown",
+    UpdateState.ERROR: "state.error",
 }
 
 CHANGE_LABELS = {
-    ChangeLevel.MAJOR: "主版本更新",
-    ChangeLevel.MINOR: "次版本更新",
-    ChangeLevel.PATCH: "bug 修复更新",
-    ChangeLevel.BUILD: "构建更新",
-    ChangeLevel.PRERELEASE: "beta/alpha 更新",
-    ChangeLevel.UNKNOWN: "可更新",
+    ChangeLevel.MAJOR: "change.major",
+    ChangeLevel.MINOR: "change.minor",
+    ChangeLevel.PATCH: "change.patch",
+    ChangeLevel.BUILD: "change.build",
+    ChangeLevel.PRERELEASE: "change.prerelease",
+    ChangeLevel.UNKNOWN: "change.unknown",
+}
+
+KIND_LABELS = {
+    InstallKind.CLIENT: "kind.client",
+    InstallKind.SERVER: "kind.server",
+    InstallKind.UNKNOWN: "kind.unknown",
 }
 
 
@@ -118,6 +126,7 @@ class ModResult:
     origin: Origin = Origin.UNKNOWN
     origin_detail: str = ""
     note: str = ""
+    note_is_error: bool = False      # note 是失败原因（用于 tooltip 排版，避免靠文案前缀判断）
 
     @property
     def has_update(self) -> bool:
@@ -135,16 +144,17 @@ class ModResult:
     @property
     def state_label(self) -> str:
         if self.state is UpdateState.OUTDATED:
-            return CHANGE_LABELS.get(self.change_level) or STATE_LABELS[self.state]
-        return STATE_LABELS[self.state]
+            return t(CHANGE_LABELS.get(self.change_level) or STATE_LABELS[self.state])
+        return t(STATE_LABELS[self.state])
 
     @property
     def origin_label(self) -> str:
-        return ORIGIN_LABELS[self.origin]
+        return t(ORIGIN_LABELS[self.origin])
 
     @property
     def source_label(self) -> str:
-        return SOURCE_LABELS[self.source]
+        # Modrinth / CurseForge 是专有名词，文案表里没有对应 key 时原样返回
+        return t(SOURCE_LABELS[self.source])
 
 
 @dataclass
@@ -165,7 +175,7 @@ class InstallInfo:
 
     @property
     def kind_label(self) -> str:
-        return {InstallKind.CLIENT: "客户端", InstallKind.SERVER: "服务器端"}.get(self.kind, "未知")
+        return t(KIND_LABELS.get(self.kind, "kind.unknown"))
 
 
 @dataclass

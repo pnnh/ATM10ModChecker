@@ -12,6 +12,7 @@ import urllib.parse
 from typing import Callable, Sequence
 
 from modchecker.cache import CacheStore
+from modchecker.i18n import t
 from modchecker.net import HttpClient
 
 BASE = "https://api.modrinth.com/v2"
@@ -51,7 +52,7 @@ class ModrinthProvider:
                 data = self.http.post_json(f"{BASE}/version_files",
                                            {"hashes": chunk, "algorithm": "sha1"})
             except Exception as exc:  # 网络异常不致命，剩余 jar 交给其他数据源
-                self.log(f"Modrinth 批量识别失败：{exc}")
+                self.log(t("provider.mr.identify_failed", error=exc))
                 break
             for sha1, version in (data or {}).items():
                 result[sha1] = version
@@ -76,7 +77,7 @@ class ModrinthProvider:
             try:
                 data = self.http.get_json(f"{BASE}/projects?ids=[{query}]")
             except Exception as exc:
-                self.log(f"Modrinth 项目信息获取失败：{exc}")
+                self.log(t("provider.mr.projects_failed", error=exc))
                 continue
             for project in data or []:
                 result[project["id"]] = project
@@ -101,7 +102,7 @@ class ModrinthProvider:
                 data = self.http.post_json(f"{BASE}/version_files/update", payload)
                 result.update(data or {})
             except Exception as exc:
-                self.log(f"Modrinth 最新版本查询失败，改用逐项目查询：{exc}")
+                self.log(t("provider.mr.latest_failed", error=exc))
                 result.update(self._latest_fallback(chunk, game_version, loader))
             done += len(chunk)
             if progress:
@@ -137,7 +138,7 @@ class ModrinthProvider:
         try:
             data = self.http.get_json(f"{BASE}/project/{project_id}/version", params=params or None)
         except Exception as exc:
-            self.log(f"Modrinth 版本列表获取失败（{project_id}）：{exc}")
+            self.log(t("provider.mr.versions_failed", id=project_id, error=exc))
             return []
         listing = data or []
         self.cache.modrinth_listings.set(key, listing)

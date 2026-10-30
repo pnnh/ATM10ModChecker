@@ -2,30 +2,52 @@
 
 from __future__ import annotations
 
-import csv
 import base64
+import csv
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QRect, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox,
-                               QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-                               QProgressBar, QPushButton, QStyle, QStyleOptionButton,
-                               QTableView, QVBoxLayout, QWidget)
+                               QFileDialog, QHeaderView, QLabel, QLineEdit, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+                               QStyle, QStyleOptionButton, QTableView, QVBoxLayout,
+                               QHBoxLayout, QWidget)
 
 from modchecker import APP_NAME, __version__, packmeta, scanner
 from modchecker.appconfig import Settings, load_settings, save_settings
 from modchecker.checker import CheckOptions
-from modchecker.models import ChangeLevel, ModResult, Origin, Report, UpdateState
+from modchecker.i18n import configure as configure_language
+from modchecker.i18n import t
+from modchecker.logging_setup import get_logger, install_qt_message_handler, setup_logging
+from modchecker.models import (ChangeLevel, InstallInfo, ModResult, Origin, Report,
+                               UpdateState)
 from modchecker.ui.models import COLUMNS, ModFilterProxy, ModTableModel, version_link
 from modchecker.ui.settings_dialog import SettingsDialog, pack_source_or_none
 from modchecker.ui.update_worker import UpdateWorker
 from modchecker.ui.worker import CheckWorker
 from modchecker.updater import UpdateOutcome, apply_outcome
 
+log = get_logger("ui")
+
 _STATE_COLUMN = next(i for i, column in enumerate(COLUMNS) if column.key == "state")
+
+# 状态下拉框：文案 key -> 过滤用的状态集合
+_STATE_FILTERS: tuple[tuple[str, set[UpdateState] | None], ...] = (
+    ("filter.state.all", None),
+    ("filter.state.outdated", {UpdateState.OUTDATED}),
+    ("filter.state.current", {UpdateState.CURRENT}),
+    ("filter.state.unknown", {UpdateState.UNKNOWN}),
+    ("filter.state.error", {UpdateState.ERROR}),
+)
+_ORIGIN_FILTERS: tuple[tuple[str, set[Origin] | None], ...] = (
+    ("filter.origin.all", None),
+    ("filter.origin.manual", {Origin.MANUAL}),
+    ("filter.origin.pack", {Origin.PACK}),
+    ("filter.origin.unknown", {Origin.UNKNOWN}),
+)
 
 _STYLESHEET = """
 QMainWindow, QWidget { background: #f6f7f9; color: #1f2328; }
@@ -103,6 +125,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings: Settings = load_settings()
         self.report: Report | None = None
+        self.install: InstallInfo | None = None
         self.worker: CheckWorker | None = None
         self.update_worker: UpdateWorker | None = None
         self._streamed = 0
@@ -110,9 +133,8 @@ class MainWindow(QMainWindow):
         self._update_done = 0
         self._update_ok = 0
 
-        self.setWindowTitle(f"{APP_NAME} v{__version__}")
-        self.resize(1320, 840)
         self._build_ui()
+        self._retranslate()
         self._restore_state(initial_dir)
 
     # ------------------------------------------------------------------ 界面
@@ -123,104 +145,93 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         header = QVBoxLayout()
-        title = QLabel(APP_NAME)
-        title.setObjectName("Title")
-        subtitle = QLabel("比对 mods 目录中的 jar 与 Modrinth / CurseForge 上的最新版本，"
-                          "区分整合包自带与手动添加的模组，并可按需把选定模组更新到最新版本。")
-        subtitle.setObjectName("Subtitle")
-        subtitle.setWordWrap(True)
-        header.addWidget(title)
-        header.addWidget(subtitle)
+        self.title_label = QLabel(APP_NAME)
+        self.title_label.setObjectName("Title")
+        self.subtitle_label = QLabel()
+        self.subtitle_label.setObjectName("Subtitle")
+        self.subtitle_label.setWordWrap(True)
+        header.addWidget(self.title_label)
+        header.addWidget(self.subtitle_label)
         layout.addLayout(header)
 
         path_row = QHBoxLayout()
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("选择 ATM10 安装目录（客户端 .minecraft 目录或服务端 ServerFiles 目录）")
         self.path_edit.editingFinished.connect(
             lambda: self._inspect_directory(self.path_edit.text().strip()))
-        browse_btn = QPushButton("浏览…")
-        browse_btn.clicked.connect(self._pick_directory)
-        self.check_btn = QPushButton("开始检测")
+        self.browse_btn = QPushButton()
+        self.browse_btn.clicked.connect(self._pick_directory)
+        self.check_btn = QPushButton()
         self.check_btn.setObjectName("Primary")
         self.check_btn.clicked.connect(self._start_check)
-        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn = QPushButton()
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel_check)
-        settings_btn = QPushButton("设置")
-        settings_btn.clicked.connect(self._open_settings)
+        self.settings_btn = QPushButton()
+        self.settings_btn.clicked.connect(self._open_settings)
         path_row.addWidget(self.path_edit, 1)
-        path_row.addWidget(browse_btn)
+        path_row.addWidget(self.browse_btn)
         path_row.addWidget(self.check_btn)
         path_row.addWidget(self.cancel_btn)
-        path_row.addWidget(settings_btn)
+        path_row.addWidget(self.settings_btn)
         layout.addLayout(path_row)
 
         # 可选的整合包原包：自动探测可能命中同名但版本不同的 zip，显式指定才可靠
         pack_row = QHBoxLayout()
-        pack_label = QLabel("整合包原包：")
+        self.pack_label = QLabel()
         self.pack_edit = QLineEdit()
-        self.pack_edit.setPlaceholderText(
-            "可选：整合包原始 zip，或原始 zip 解压后的纯净目录（留空则用实例自带的清单）")
         self.pack_edit.editingFinished.connect(self._on_pack_source_changed)
-        pack_zip_btn = QPushButton("选择 zip…")
-        pack_zip_btn.clicked.connect(self._pick_pack_zip)
-        pack_dir_btn = QPushButton("选择目录…")
-        pack_dir_btn.clicked.connect(self._pick_pack_dir)
-        pack_clear_btn = QPushButton("清除")
-        pack_clear_btn.clicked.connect(self._clear_pack_source)
-        pack_row.addWidget(pack_label)
+        self.pack_zip_btn = QPushButton()
+        self.pack_zip_btn.clicked.connect(self._pick_pack_zip)
+        self.pack_dir_btn = QPushButton()
+        self.pack_dir_btn.clicked.connect(self._pick_pack_dir)
+        self.pack_clear_btn = QPushButton()
+        self.pack_clear_btn.clicked.connect(self._clear_pack_source)
+        pack_row.addWidget(self.pack_label)
         pack_row.addWidget(self.pack_edit, 1)
-        pack_row.addWidget(pack_zip_btn)
-        pack_row.addWidget(pack_dir_btn)
-        pack_row.addWidget(pack_clear_btn)
+        pack_row.addWidget(self.pack_zip_btn)
+        pack_row.addWidget(self.pack_dir_btn)
+        pack_row.addWidget(self.pack_clear_btn)
         layout.addLayout(pack_row)
 
         info_row = QHBoxLayout()
         info_row.setSpacing(8)
-        self.chip_kind = self._chip("类型：-")
-        self.chip_version = self._chip("Minecraft：-")
-        self.chip_loader = self._chip("加载器：-")
-        self.chip_pack = self._chip("整合包版本：-")
-        self.chip_index = self._chip("官方清单：-")
+        self.chip_kind = self._chip()
+        self.chip_version = self._chip()
+        self.chip_loader = self._chip()
+        self.chip_pack = self._chip()
+        self.chip_index = self._chip()
         for chip in (self.chip_kind, self.chip_version, self.chip_loader,
                      self.chip_pack, self.chip_index):
             info_row.addWidget(chip)
         info_row.addStretch(1)
         layout.addLayout(info_row)
 
-        self.pack_banner = QLabel("尚未检测")
+        self.pack_banner = QLabel()
         self.pack_banner.setObjectName("PackBanner")
         self.pack_banner.setStyleSheet("background:#eef1f5;color:#40464e;")
         layout.addWidget(self.pack_banner)
 
         filter_row = QHBoxLayout()
-        self.update_btn = QPushButton("批量更新")
+        self.update_btn = QPushButton()
         self.update_btn.setEnabled(False)
-        self.update_btn.setToolTip("勾选左侧复选框后可用：把所选模组更新到最新版本")
         self.update_btn.clicked.connect(self._batch_update)
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("搜索模组名 / 文件名 / modId")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.textChanged.connect(lambda *_: self._apply_filters())
         self.state_combo = QComboBox()
-        self.state_combo.addItem("全部状态", None)
-        self.state_combo.addItem("可更新", {UpdateState.OUTDATED})
-        self.state_combo.addItem("已最新", {UpdateState.CURRENT})
-        self.state_combo.addItem("未知", {UpdateState.UNKNOWN})
-        self.state_combo.addItem("查询失败", {UpdateState.ERROR})
+        for key, _states in _STATE_FILTERS:
+            self.state_combo.addItem("", _states)
         self.state_combo.currentIndexChanged.connect(lambda *_: self._apply_filters())
         self.origin_combo = QComboBox()
-        self.origin_combo.addItem("全部归属", None)
-        self.origin_combo.addItem("手动添加", {Origin.MANUAL})
-        self.origin_combo.addItem("整合包自带", {Origin.PACK})
-        self.origin_combo.addItem("未知归属", {Origin.UNKNOWN})
+        for key, _origins in _ORIGIN_FILTERS:
+            self.origin_combo.addItem("", _origins)
         self.origin_combo.currentIndexChanged.connect(lambda *_: self._apply_filters())
-        self.only_updates = QCheckBox("只看可更新")
+        self.only_updates = QCheckBox()
         self.only_updates.stateChanged.connect(lambda *_: self._apply_filters())
-        self.export_btn = QPushButton("导出 CSV")
+        self.export_btn = QPushButton()
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export_csv)
-        self.log_btn = QPushButton("日志")
+        self.log_btn = QPushButton()
         self.log_btn.setCheckable(True)
         self.log_btn.toggled.connect(self._toggle_log)
 
@@ -233,7 +244,7 @@ class MainWindow(QMainWindow):
         filter_row.addWidget(self.log_btn)
         layout.addLayout(filter_row)
 
-        self.stats_label = QLabel("—")
+        self.stats_label = QLabel()
         layout.addWidget(self.stats_label)
 
         self.model = ModTableModel(self)
@@ -280,7 +291,7 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.status_label = QLabel("就绪")
+        self.status_label = QLabel()
         self.status_label.setObjectName("Subtitle")
         progress_row.addWidget(self.progress, 1)
         progress_row.addWidget(self.status_label)
@@ -290,10 +301,56 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(_STYLESHEET)
 
     @staticmethod
-    def _chip(text: str) -> QLabel:
-        label = QLabel(text)
+    def _chip() -> QLabel:
+        label = QLabel()
         label.setObjectName("InfoChip")
         return label
+
+    def _retranslate(self) -> None:
+        """按当前语言刷新所有静态文案；语言在设置里切换后立即调用。"""
+        self.setWindowTitle(f"{t('app.title')} v{__version__}")
+        self.title_label.setText(t("app.title"))
+        self.subtitle_label.setText(t("app.subtitle"))
+
+        self.path_edit.setPlaceholderText(t("placeholder.path"))
+        self.browse_btn.setText(t("button.browse"))
+        self.check_btn.setText(t("button.start"))
+        self.cancel_btn.setText(t("button.cancel"))
+        self.settings_btn.setText(t("button.settings"))
+
+        self.pack_label.setText(t("label.pack"))
+        self.pack_edit.setPlaceholderText(t("placeholder.pack"))
+        self.pack_zip_btn.setText(t("button.pick_zip"))
+        self.pack_dir_btn.setText(t("button.pick_dir"))
+        self.pack_clear_btn.setText(t("button.clear"))
+
+        for chip, key in ((self.chip_kind, "chip.kind"), (self.chip_version, "chip.mc"),
+                          (self.chip_loader, "chip.loader"), (self.chip_pack, "chip.pack"),
+                          (self.chip_index, "chip.index")):
+            chip.setText(t(key))
+
+        self.update_btn.setToolTip(t("tip.batch_update"))
+        self.search_edit.setPlaceholderText(t("placeholder.search"))
+        for combo, items in ((self.state_combo, _STATE_FILTERS),
+                             (self.origin_combo, _ORIGIN_FILTERS)):
+            for position, (key, _value) in enumerate(items):
+                combo.setItemText(position, t(key))
+        self.only_updates.setText(t("filter.only_updates"))
+        self.export_btn.setText(t("button.export"))
+        self.log_btn.setText(t("button.log"))
+
+        self.stats_label.setText(t("stats.empty"))
+        self.status_label.setText(t("status.ready"))
+        self.pack_banner.setText(t("banner.idle"))
+
+        # 依赖已检测数据的动态文案
+        if self.install is not None:
+            self._apply_install_info(self.install)
+        if self.report is not None:
+            self._update_stats(self.report)
+            self._update_pack_banner(self.report)
+        self.model.refresh_texts()
+        self._refresh_update_button()
 
     def _toggle_log(self, visible: bool) -> None:
         self.log_view.setVisible(visible)
@@ -303,8 +360,8 @@ class MainWindow(QMainWindow):
             try:
                 self.restoreGeometry(QByteArray(
                     base64.b64decode(self.settings.window_geometry.encode("ascii"))))
-            except Exception:
-                pass
+            except (ValueError, TypeError) as exc:
+                log.warning("恢复窗口位置失败：%s", exc)
         self.pack_edit.setText(self.settings.pack_source)
         # 命令行传入的目录优先于上次使用的目录
         for candidate in (initial_dir, self.settings.last_directory):
@@ -316,10 +373,25 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 目录
     def _pick_directory(self) -> None:
         start = self.path_edit.text().strip() or self.settings.last_directory
-        directory = QFileDialog.getExistingDirectory(self, "选择 ATM10 安装目录", start)
+        try:
+            directory = QFileDialog.getExistingDirectory(self, t("dialog.file.choose_dir"),
+                                                         start)
+        except Exception:
+            log.exception("打开目录选择框失败")
+            return
         if directory:
             self.path_edit.setText(directory)
             self._inspect_directory(directory)
+
+    def _apply_install_info(self, info: InstallInfo) -> None:
+        unknown = t("chip.value_unknown")
+        self.chip_kind.setText(t("chip.kind_value", value=info.kind_label))
+        self.chip_version.setText(t("chip.mc_value", value=info.mc_version or unknown))
+        loader = info.loader or unknown
+        if info.loader_version:
+            loader = f"{loader} {info.loader_version}"
+        self.chip_loader.setText(t("chip.loader_value", value=loader))
+        self.chip_pack.setText(t("chip.pack_value", value=info.pack_version or unknown))
 
     def _inspect_directory(self, directory: str) -> None:
         if not directory:
@@ -330,35 +402,42 @@ class MainWindow(QMainWindow):
         try:
             info = scanner.detect_install(path)
         except scanner.ScanError as exc:
+            log.warning("识别安装目录失败：%s", exc)
             self.status_label.setText(str(exc))
             return
         except Exception as exc:  # 目录权限等
-            self.status_label.setText(f"读取目录失败：{exc}")
+            log.exception("读取目录时出错：%s", path)
+            self.status_label.setText(t("status.read_failed", error=exc))
             return
-        self.chip_kind.setText(f"类型：{info.kind_label}")
-        self.chip_version.setText(f"Minecraft：{info.mc_version or '未识别'}")
-        loader = info.loader or "未识别"
-        if info.loader_version:
-            loader = f"{loader} {info.loader_version}"
-        self.chip_loader.setText(f"加载器：{loader}")
-        self.chip_pack.setText(f"整合包版本：{info.pack_version or '未识别'}")
+        self.install = info
+        self._apply_install_info(info)
         self._refresh_index_chip(info)
-        self.status_label.setText(f"已识别 mods 目录：{info.mods_dir}（{info.jar_total} 个 jar）")
+        self.status_label.setText(t("status.identified", path=info.mods_dir,
+                                    count=info.jar_total))
         self.settings.last_directory = str(path)
         save_settings(self.settings)
 
     # ------------------------------------------------------------------ 整合包原包
     def _pick_pack_zip(self) -> None:
         start = self.pack_edit.text().strip() or self.path_edit.text().strip()
-        path, _ = QFileDialog.getOpenFileName(self, "选择整合包原始 zip", start,
-                                              "Zip 文件 (*.zip)")
+        try:
+            path, _ = QFileDialog.getOpenFileName(self, t("dialog.file.choose_pack_zip"), start,
+                                                  t("dialog.file.zip_filter"))
+        except Exception:
+            log.exception("打开文件选择框失败")
+            return
         if path:
             self.pack_edit.setText(path)
             self._on_pack_source_changed()
 
     def _pick_pack_dir(self) -> None:
         start = self.pack_edit.text().strip() or self.path_edit.text().strip()
-        directory = QFileDialog.getExistingDirectory(self, "选择整合包解压后的目录", start)
+        try:
+            directory = QFileDialog.getExistingDirectory(self, t("dialog.file.choose_pack_dir"),
+                                                         start)
+        except Exception:
+            log.exception("打开目录选择框失败")
+            return
         if directory:
             self.pack_edit.setText(directory)
             self._on_pack_source_changed()
@@ -375,44 +454,51 @@ class MainWindow(QMainWindow):
     def _refresh_index_chip(self, info=None) -> None:
         """检测之前就把已知的官方清单信息填进标签，避免一直是“—”。"""
         text = self.pack_edit.text().strip()
-        if text:
-            path = Path(text).expanduser()
-            if not (path.is_file() or path.is_dir()):
-                self.chip_index.setText("官方清单：路径无效")
-                self.chip_index.setToolTip(text)
-                return
-            meta = packmeta.load_pack_reference(path)
-            source = f"指定来源：{meta.source or path}"
-        else:
-            if info is None:
-                directory = self.path_edit.text().strip()
-                if not directory or not Path(directory).is_dir():
+        try:
+            if text:
+                path = Path(text).expanduser()
+                if not (path.is_file() or path.is_dir()):
+                    self.chip_index.setText(t("chip.index_bad_path"))
+                    self.chip_index.setToolTip(text)
                     return
-                try:
+                meta = packmeta.load_pack_reference(path)
+                source = t("chip.index_source_specified", source=meta.source or str(path))
+            else:
+                if info is None:
+                    directory = self.path_edit.text().strip()
+                    if not directory or not Path(directory).is_dir():
+                        return
                     info = scanner.detect_install(Path(directory))
-                except Exception:
-                    return
-            meta = packmeta.find_local_metadata(info.game_dir, info.root, info.game_dir.parent)
-            source = f"实例目录：{meta.source or '未找到可用清单'}"
+                meta = packmeta.find_local_metadata(info.game_dir, info.root,
+                                                    info.game_dir.parent)
+                source = t("chip.index_source_instance",
+                           source=meta.source or t("chip.index_source_missing"))
+        except Exception as exc:      # 清单可能损坏 / 无权限
+            log.warning("读取整合包清单失败：%s", exc)
+            self.chip_index.setText(t("chip.index_unusable"))
+            self.chip_index.setToolTip(str(exc))
+            return
 
         if meta.filenames or meta.sha1s or meta.project_files:
-            version = meta.pack_version or "未知版本"
-            self.chip_index.setText(f"官方清单：{version} / {len(meta.filenames)} 项")
-            self.chip_index.setToolTip(
-                f"{source}\n项目 {len(meta.project_files)} 个，"
-                f"文件名 {len(meta.filenames)} 个，哈希 {len(meta.sha1s)} 个")
+            self.chip_index.setText(t("chip.index_value",
+                                      version=meta.pack_version or t("chip.version_unknown"),
+                                      items=len(meta.filenames)))
+            self.chip_index.setToolTip(t("chip.index_items_tip", source=source,
+                                         projects=len(meta.project_files),
+                                         names=len(meta.filenames),
+                                         hashes=len(meta.sha1s)))
         else:
-            self.chip_index.setText("官方清单：未找到")
+            self.chip_index.setText(t("chip.index_missing"))
             self.chip_index.setToolTip(source)
 
     # ------------------------------------------------------------------ 检测
     def _build_options(self) -> CheckOptions | None:
         directory = self.path_edit.text().strip()
         if not directory or not Path(directory).is_dir():
-            QMessageBox.warning(self, "需要安装目录", "请先选择 ATM10 的安装目录。")
+            QMessageBox.warning(self, t("dialog.need_dir.title"), t("dialog.need_dir.text"))
             return None
         if not self.settings.use_modrinth and not self.settings.use_curseforge:
-            QMessageBox.warning(self, "没有可用的数据源", "请至少启用一个数据源（Modrinth 或 CurseForge）。")
+            QMessageBox.warning(self, t("dialog.no_source.title"), t("dialog.no_source.text"))
             return None
         self.settings.pack_source = self.pack_edit.text().strip()
         return CheckOptions(
@@ -441,31 +527,39 @@ class MainWindow(QMainWindow):
         self.table.setSortingEnabled(False)
         self.export_btn.setEnabled(False)
         self.log_view.clear()
-        self.stats_label.setText("检测中…")
-        self.pack_banner.setText("正在获取整合包版本信息…")
+        self.stats_label.setText(t("status.checking_initial"))
+        self.pack_banner.setText(t("status.pack_loading"))
         self.progress.setValue(0)
         self._set_running(True)
 
-        self.worker = CheckWorker(Path(directory), options)
-        self.worker.progress.connect(self._on_progress)
-        self.worker.stage.connect(self._on_stage)
-        self.worker.log.connect(self._on_log)
-        self.worker.result_ready.connect(self._on_result_ready)
-        self.worker.finished_ok.connect(self._on_finished)
-        self.worker.cancelled.connect(self._on_cancelled)
-        self.worker.failed.connect(self._on_failed)
-        self.worker.finished.connect(self._on_thread_finished)
-        self.worker.start()
+        try:
+            self.worker = CheckWorker(Path(directory), options)
+            self.worker.progress.connect(self._on_progress)
+            self.worker.stage.connect(self._on_stage)
+            self.worker.log.connect(self._on_log)
+            self.worker.result_ready.connect(self._on_result_ready)
+            self.worker.finished_ok.connect(self._on_finished)
+            self.worker.cancelled.connect(self._on_cancelled)
+            self.worker.failed.connect(self._on_failed)
+            self.worker.finished.connect(self._on_thread_finished)
+            self.worker.start()
+        except Exception as exc:      # 线程创建失败等
+            log.exception("启动检测线程失败")
+            self.worker = None
+            self._set_running(False)
+            QMessageBox.critical(self, t("dialog.check_failed.title"), str(exc))
+            return
+        log.info("开始检测：%s", directory)
 
     def _cancel_check(self) -> None:
         if self.update_worker is not None:
             self.cancel_btn.setEnabled(False)
-            self.status_label.setText("正在停止更新…")
+            self.status_label.setText(t("status.stopping_update"))
             self.update_worker.cancel()
             return
         if self.worker is not None:
             self.cancel_btn.setEnabled(False)
-            self.status_label.setText("正在取消…")
+            self.status_label.setText(t("status.cancelling"))
             self.worker.cancel()
 
     def _set_running(self, running: bool) -> None:
@@ -476,23 +570,24 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, label: str, percent: int) -> None:
         self.progress.setValue(percent)
-        self.status_label.setText(f"{label}… {percent}%")
+        self.status_label.setText(t("status.progress", label=label, percent=percent))
 
     def _on_stage(self, label: str, done: int, total: int) -> None:
         if total:
-            self.status_label.setText(f"{label}… {done}/{total}")
+            self.status_label.setText(t("status.stage", label=label, done=done, total=total))
         else:
-            self.status_label.setText(f"{label}…")
+            self.status_label.setText(t("status.stage_plain", label=label))
 
     def _on_log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
+        log.info("%s", message)       # 同时落到 latest.log
 
     def _on_result_ready(self, result) -> None:
         """后台每查完一个模组就追加一行，用户不必对着空列表等。"""
         self.model.append_result(result)
         self._streamed += 1
         if self._streamed == 1 or self._streamed % 10 == 0:
-            self.stats_label.setText(f"检测中… 已显示 {self._streamed} 个模组")
+            self.stats_label.setText(t("status.checking", count=self._streamed))
 
     def _on_thread_finished(self) -> None:
         if self.worker is not None:
@@ -512,33 +607,37 @@ class MainWindow(QMainWindow):
         self._refresh_update_button()
         self._update_stats(report)
         self._update_pack_banner(report)
-        self.status_label.setText(f"检测完成，用时 {report.elapsed:.1f} 秒")
+        self.status_label.setText(t("status.done", seconds=report.elapsed))
         for warning in report.warnings:
-            self.log_view.appendPlainText(f"[警告] {warning}")
+            self.log_view.appendPlainText(t("log.warning", text=warning))
+            log.warning("%s", warning)
         if report.query_errors:
-            self.log_view.appendPlainText(f"[提示] {report.query_errors} 个模组查询失败，可稍后重试。")
+            self.log_view.appendPlainText(t("log.query_failed_hint", count=report.query_errors))
+        log.info("检测完成：%d 个模组，用时 %.1f 秒", report.total, report.elapsed)
 
     def _on_cancelled(self) -> None:
         self.table.setSortingEnabled(True)
-        self.status_label.setText("已取消")
+        self.status_label.setText(t("status.cancelled"))
         self.progress.setValue(0)
         self._refresh_update_button()
+        log.info("检测被取消（已显示 %d 个模组）", self._streamed)
         if self.report is None:
             if self._streamed:
-                self.stats_label.setText(f"已取消，已显示 {self._streamed} 个模组（未完成）")
+                self.stats_label.setText(t("status.cancelled_partial", count=self._streamed))
             else:
-                self.stats_label.setText("—")
+                self.stats_label.setText(t("stats.empty"))
 
     def _on_failed(self, message: str) -> None:
         self.table.setSortingEnabled(True)
-        self.status_label.setText("检测失败")
+        self.status_label.setText(t("status.failed"))
         self.progress.setValue(0)
         self._refresh_update_button()
+        log.error("检测失败：%s", message)
         if self._streamed:
-            self.stats_label.setText(f"检测失败，已显示 {self._streamed} 个模组（未完成）")
+            self.stats_label.setText(t("status.failed_partial", count=self._streamed))
         else:
-            self.stats_label.setText("—")
-        QMessageBox.critical(self, "检测失败", message)
+            self.stats_label.setText(t("stats.empty"))
+        QMessageBox.critical(self, t("dialog.check_failed.title"), message)
 
     # ------------------------------------------------------------------ 更新
     def _refresh_update_button(self) -> None:
@@ -547,7 +646,8 @@ class MainWindow(QMainWindow):
         checked = self.model.checked_results()
         busy = self.worker is not None or self.update_worker is not None
         self.update_btn.setEnabled(bool(checked) and not busy)
-        self.update_btn.setText(f"批量更新（{len(checked)}）" if checked else "批量更新")
+        self.update_btn.setText(t("button.batch_update_n", n=len(checked)) if checked
+                                else t("button.batch_update"))
         if not candidates:
             state = Qt.CheckState.Unchecked
         elif len(checked) >= len(candidates):
@@ -560,37 +660,34 @@ class MainWindow(QMainWindow):
 
     def _build_confirm_box(self, results: list[ModResult]) -> tuple[QMessageBox, QPushButton]:
         """组装二次确认弹窗；主/次版本更新需要用户勾选知晓后才能确认。"""
-        names = "、".join(r.title for r in results[:5])
+        separator = t("common.list_separator")
+        names = separator.join(r.title for r in results[:5])
         if len(results) > 5:
-            names += f" 等 {len(results)} 个模组"
+            names = t("dialog.update.more", names=names, count=len(results))
 
         breaking = [r for r in results
                     if r.change_level in (ChangeLevel.MAJOR, ChangeLevel.MINOR)]
         unclear = [r for r in results if r.change_level is ChangeLevel.UNKNOWN]
 
-        details = ["此操作不可撤销！请务必先手动备份整个游戏实例（至少备份 mods 目录）。",
-                   "程序会用官方文件替换旧 jar，旧文件保留为 .bak 备份。"]
+        details = [t("dialog.update.irreversible"), t("dialog.update.backup")]
         if breaking:
-            listed = "、".join(f"{r.title}（{r.state_label}）" for r in breaking[:3])
+            listed = separator.join(f"{r.title} ({r.state_label})" for r in breaking[:3])
             if len(breaking) > 3:
-                listed += f" 等 {len(breaking)} 个"
-            details.insert(0, f"{listed} 属于主版本 / 次版本更新，可能包含破坏性变更"
-                              "（配置文件、注册表 ID、数据格式、API 等）。"
-                              "建议先点击“最新版本”打开版本发布页阅读发版说明。")
+                listed = t("dialog.update.more", names=listed, count=len(breaking))
+            details.insert(0, t("dialog.update.breaking", names=listed))
         if unclear:
-            details.append(f"另有 {len(unclear)} 个模组无法按版本号判断更新幅度，"
-                           "同样建议先查看发版说明。")
+            details.append(t("dialog.update.unclear", count=len(unclear)))
 
         box = QMessageBox(self)
-        box.setWindowTitle("确认更新模组")
+        box.setWindowTitle(t("dialog.update.title"))
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"将把以下模组更新到最新版本：\n{names}")
+        box.setText(t("dialog.update.text", names=names))
         box.setInformativeText("\n\n".join(details))
-        confirm = box.addButton("我已备份，开始更新", QMessageBox.ButtonRole.AcceptRole)
-        cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        confirm = box.addButton(t("dialog.update.accept"), QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton(t("dialog.update.cancel"), QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(cancel)
         if breaking or unclear:
-            aware = QCheckBox("我已阅读相关发版说明，知晓更新可能带来的后果", box)
+            aware = QCheckBox(t("dialog.update.aware"), box)
             box.setCheckBox(aware)
             confirm.setEnabled(False)
             aware.toggled.connect(confirm.setEnabled)
@@ -614,21 +711,31 @@ class MainWindow(QMainWindow):
         if result is None:
             return
         if column in ("installed", "latest"):
-            url = version_link(result, column)
-            if url:
-                QDesktopServices.openUrl(QUrl(url))
+            self._open_url(version_link(result, column))
             return
         if column != "state":
             return
         if not result.can_update:
             if result.has_update:
-                self.status_label.setText(
-                    f"{result.title}：该文件没有可用的下载直链，请到项目页手动下载")
+                self.status_label.setText(t("status.no_direct_link", title=result.title))
             return
         if self.update_worker is not None or self.worker is not None:
             return
         if self._confirm_update([result]):
             self._start_update([result])
+
+    def _open_url(self, url: str) -> None:
+        """用系统默认浏览器打开链接；失败时提示而不是静默无反应。"""
+        if not url:
+            return
+        try:
+            opened = QDesktopServices.openUrl(QUrl(url))
+        except Exception:
+            log.exception("打开链接失败：%s", url)
+            opened = False
+        if not opened:
+            self.status_label.setText(t("status.open_url_failed", url=url))
+            log.warning("无法打开浏览器：%s", url)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         """鼠标移到可点击的单元格上时换成手型光标。"""
@@ -656,18 +763,28 @@ class MainWindow(QMainWindow):
         self._update_ok = 0
         self.progress.setRange(0, self._update_total)
         self.progress.setValue(0)
-        self.log_view.appendPlainText(f"[更新] 开始更新 {self._update_total} 个模组")
-        self.update_worker = UpdateWorker(results, self)
-        self.update_worker.item_done.connect(self._on_update_done)
-        self.update_worker.log.connect(self._on_log)
-        self.update_worker.finished_all.connect(self._on_update_finished)
-        self.update_worker.finished.connect(self._on_update_thread_finished)
+        self.log_view.appendPlainText(t("log.update_start", count=self._update_total))
+        try:
+            self.update_worker = UpdateWorker(results, self)
+            self.update_worker.item_done.connect(self._on_update_done)
+            self.update_worker.log.connect(self._on_log)
+            self.update_worker.finished_all.connect(self._on_update_finished)
+            self.update_worker.finished.connect(self._on_update_thread_finished)
+            self.update_worker.start()
+        except Exception as exc:
+            log.exception("启动更新线程失败")
+            self.update_worker = None
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            QMessageBox.critical(self, t("dialog.error.title"),
+                                 t("dialog.error.text", error=exc))
+            return
         self.check_btn.setEnabled(False)
         self.path_edit.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.update_btn.setEnabled(False)
-        self.status_label.setText(f"正在更新 1/{self._update_total}…")
-        self.update_worker.start()
+        self.status_label.setText(t("status.updating", done=1, total=self._update_total))
+        log.info("开始更新 %d 个模组", self._update_total)
 
     def _on_update_done(self, outcome: UpdateOutcome) -> None:
         apply_outcome(outcome.result, outcome)
@@ -675,27 +792,30 @@ class MainWindow(QMainWindow):
         self._update_done += 1
         if outcome.ok:
             self._update_ok += 1
-            self.log_view.appendPlainText(f"[更新] {outcome.result.title}：{outcome.message}")
+            self.log_view.appendPlainText(
+                t("log.update_ok", title=outcome.result.title, message=outcome.message))
+            log.info("更新成功：%s（%s）", outcome.result.title, outcome.message)
         else:
             self.log_view.appendPlainText(
-                f"[更新失败] {outcome.result.title}：{outcome.message}")
+                t("log.update_failed", title=outcome.result.title, message=outcome.message))
+            log.error("更新失败：%s（%s）", outcome.result.title, outcome.message)
         self.progress.setValue(self._update_done)
-        self.status_label.setText(
-            f"正在更新 {self._update_done}/{self._update_total}"
-            f"（成功 {self._update_ok}）")
+        self.status_label.setText(t("status.updating_progress", done=self._update_done,
+                                    total=self._update_total, ok=self._update_ok))
 
     def _on_update_finished(self, outcomes) -> None:
         self._apply_filters()
         failed = [item for item in outcomes if not item.ok]
         if self.report is not None:
             self._update_stats(self.report)
-        message = f"更新完成：成功 {len(outcomes) - len(failed)} 个"
+        message = t("status.update_done", ok=len(outcomes) - len(failed))
         if len(outcomes) < self._update_total:
-            message += f"，已取消（总计 {self._update_total} 个）"
+            message += t("status.update_cancelled_suffix", total=self._update_total)
         if failed:
-            message += f"，失败 {len(failed)} 个（详见日志）"
-            QMessageBox.warning(self, "部分模组更新失败",
-                                "\n".join(f"{item.result.title}：{item.message}"
+            message += t("status.update_failed_suffix", failed=len(failed))
+            separator = t("common.list_separator")
+            QMessageBox.warning(self, t("dialog.update_failed.title"),
+                                "\n".join(f"{item.result.title}{separator}{item.message}"
                                           for item in failed[:10]))
         self.status_label.setText(message)
 
@@ -716,35 +836,31 @@ class MainWindow(QMainWindow):
     def _update_pack_banner(self, report: Report) -> None:
         pack = report.pack
         if pack.latest is None:
-            self.pack_banner.setText(pack.message or "无法获取整合包版本信息")
+            self.pack_banner.setText(pack.message or t("banner.pack_unknown_generic"))
             self.pack_banner.setStyleSheet("background:#f1f3f5;color:#666e79;")
             return
         if pack.update_available:
-            self.pack_banner.setText(
-                f"⚠ {pack.message}　最新版发布于 {pack.latest.uploaded_at[:10]}，"
-                f"共 {pack.release_count} 个发行版")
+            self.pack_banner.setText(t("banner.pack_update", message=pack.message,
+                                       date=pack.latest.uploaded_at[:10],
+                                       count=pack.release_count))
             self.pack_banner.setStyleSheet("background:#fff4e0;color:#a35b00;")
         else:
-            self.pack_banner.setText(f"✓ {pack.message}")
+            self.pack_banner.setText(t("banner.pack_current", message=pack.message))
             self.pack_banner.setStyleSheet("background:#e7f7ec;color:#1c7a3e;")
 
         index = report.index
         if index and index.usable:
-            self.chip_index.setText(
-                f"官方清单：{index.pack_version or '未知版本'} / {len(index.filenames)} 项")
-            self.chip_index.setToolTip(f"来源：{index.source}")
+            self.chip_index.setText(t("chip.index_value",
+                                      version=index.pack_version or t("chip.version_unknown"),
+                                      items=len(index.filenames)))
+            self.chip_index.setToolTip(t("chip.index_source_tip", source=index.source))
         else:
-            self.chip_index.setText("官方清单：未获取")
-            self.chip_index.setToolTip("无法区分整合包自带与手动添加的模组")
+            self.chip_index.setText(t("chip.index_unusable"))
+            self.chip_index.setToolTip(t("chip.index_no_classify"))
 
         install = report.install
-        self.chip_kind.setText(f"类型：{install.kind_label}")
-        self.chip_version.setText(f"Minecraft：{install.mc_version or '未识别'}")
-        loader = install.loader or "未识别"
-        if install.loader_version:
-            loader = f"{loader} {install.loader_version}"
-        self.chip_loader.setText(f"加载器：{loader}")
-        self.chip_pack.setText(f"整合包版本：{install.pack_version or '未识别'}")
+        self.install = install
+        self._apply_install_info(install)
 
     def _update_stats(self, report: Report) -> None:
         manual = report.count_origin(Origin.MANUAL)
@@ -753,13 +869,15 @@ class MainWindow(QMainWindow):
         failed = report.count_state(UpdateState.ERROR)
         unknown = report.unknown - failed
         self.stats_label.setText(
-            f"共 {report.total} 个模组　"
-            f"<span style='color:#d98e04;font-weight:600'>可更新 {report.outdated}</span>　"
-            f"<span style='color:#2f9e44;'>已最新 {report.current}</span>　"
-            f"<span style='color:#8a8a8a;'>未知 {unknown}</span>　"
-            f"<span style='color:#c92a2a;'>查询失败 {failed}</span>　|　"
-            f"<span style='color:#1c7ed6;font-weight:600'>手动添加 {manual}</span>　"
-            f"整合包自带 {pack}　归属未知 {unknown_origin}"
+            f"{t('stats.total', n=report.total)}　"
+            f"<span style='color:#d98e04;font-weight:600'>"
+            f"{t('stats.outdated', n=report.outdated)}</span>　"
+            f"<span style='color:#2f9e44;'>{t('stats.current', n=report.current)}</span>　"
+            f"<span style='color:#8a8a8a;'>{t('stats.unknown', n=unknown)}</span>　"
+            f"<span style='color:#c92a2a;'>{t('stats.failed', n=failed)}</span>　|　"
+            f"<span style='color:#1c7ed6;font-weight:600'>"
+            f"{t('stats.manual', n=manual)}</span>　"
+            f"{t('stats.pack', n=pack)}　{t('stats.origin_unknown', n=unknown_origin)}"
         )
 
     def _apply_filters(self) -> None:
@@ -776,22 +894,29 @@ class MainWindow(QMainWindow):
         source_row = self.proxy.mapToSource(index).row()
         result = self.model.result_at(source_row)
         if result is not None and result.project_url:
-            QDesktopServices.openUrl(QUrl(result.project_url))
+            self._open_url(result.project_url)
 
     # ------------------------------------------------------------------ 导出
     def _export_csv(self) -> None:
         if self.report is None:
             return
         default = f"atm10-modcheck-{datetime.now():%Y%m%d-%H%M}.csv"
-        path, _ = QFileDialog.getSaveFileName(self, "导出检测结果", default, "CSV 文件 (*.csv)")
+        try:
+            path, _ = QFileDialog.getSaveFileName(self, t("dialog.file.export"), default,
+                                                  t("dialog.file.csv_filter"))
+        except Exception:
+            log.exception("打开保存对话框失败")
+            return
         if not path:
             return
         try:
             with open(path, "w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.writer(handle)
-                writer.writerow(["状态", "模组", "归属", "当前版本", "当前发布时间",
-                                 "最新版本", "最新发布时间", "来源", "文件名", "modId",
-                                 "链接", "备注"])
+                writer.writerow([t("csv.status"), t("csv.mod"), t("csv.origin"),
+                                 t("csv.installed"), t("csv.installed_date"),
+                                 t("csv.latest"), t("csv.latest_date"), t("csv.source"),
+                                 t("csv.filename"), t("csv.mod_id"), t("csv.link"),
+                                 t("csv.note")])
                 for result in self.report.mods:
                     writer.writerow([
                         result.state_label, result.title, result.origin_label,
@@ -801,36 +926,58 @@ class MainWindow(QMainWindow):
                         result.project_url, result.note,
                     ])
         except OSError as exc:
-            QMessageBox.critical(self, "导出失败", str(exc))
+            log.error("导出 CSV 失败：%s", exc)
+            QMessageBox.critical(self, t("dialog.export_failed.title"), str(exc))
             return
-        self.status_label.setText(f"已导出：{path}")
+        except Exception as exc:      # 数据异常也不该让界面崩掉
+            log.exception("导出 CSV 时出错")
+            QMessageBox.critical(self, t("dialog.export_failed.title"),
+                                 t("dialog.error.text", error=exc))
+            return
+        self.status_label.setText(t("status.exported", path=path))
+        log.info("已导出：%s", path)
 
     # ------------------------------------------------------------------ 其它
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.settings, self)
-        if dialog.exec():
-            dialog.apply_to(self.settings)
-            save_settings(self.settings)
-            self.pack_edit.setText(self.settings.pack_source)
-            if self.settings.last_directory:
-                self._inspect_directory(self.settings.last_directory)
-            else:
-                self._refresh_index_chip()
+        try:
+            dialog = SettingsDialog(self.settings, self)
+            accepted = dialog.exec()
+        except Exception as exc:
+            log.exception("打开设置窗口失败")
+            QMessageBox.critical(self, t("dialog.error.title"),
+                                 t("dialog.error.text", error=exc))
+            return
+        if not accepted:
+            return
+        previous_language = self.settings.language
+        dialog.apply_to(self.settings)
+        save_settings(self.settings)
+        self.pack_edit.setText(self.settings.pack_source)
+        if self.settings.language != previous_language:
+            language = configure_language(self.settings.language)
+            log.info("界面语言切换为：%s", language)
+            self._retranslate()
+        if self.settings.last_directory:
+            self._inspect_directory(self.settings.last_directory)
+        else:
+            self._refresh_index_chip()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.update_worker is not None:
             self.update_worker.cancel()
-            self.update_worker.wait(5000)
+            if not self.update_worker.wait(5000):
+                log.warning("更新线程 5 秒内没有退出，仍将关闭窗口")
         if self.worker is not None:
             self.worker.cancel()
-            self.worker.wait(3000)
+            if not self.worker.wait(3000):
+                log.warning("检测线程 3 秒内没有退出，仍将关闭窗口")
         try:
             self.settings.pack_source = self.pack_edit.text().strip()
             geometry = bytes(self.saveGeometry().toBase64()).decode("ascii")
             self.settings.window_geometry = geometry
             save_settings(self.settings)
-        except Exception:
-            pass
+        except (OSError, ValueError) as exc:
+            log.warning("保存窗口状态失败：%s", exc)
         super().closeEvent(event)
 
 
@@ -842,11 +989,23 @@ def _csv_date(value) -> str:
 
 
 def run_app(argv: list[str]) -> int:
+    log_dir = setup_logging()
+    install_qt_message_handler()
+    settings = load_settings()
+    language = configure_language(settings.language)
+    log.info("日志目录：%s", log_dir)
+    log.info("界面语言：%s（设置：%s）", language, settings.language or "auto")
+
     app = QApplication(argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
-    font = QFont("Microsoft YaHei UI", 9)
-    app.setFont(font)
-    window = MainWindow(argv[1] if len(argv) > 1 else "")
-    window.show()
+    if sys.platform == "win32":       # macOS / Linux 使用系统默认字体，避免缺字回退
+        app.setFont(QFont("Microsoft YaHei UI", 9))
+    try:
+        window = MainWindow(argv[1] if len(argv) > 1 else "")
+        window.show()
+    except Exception:
+        log.exception("创建主窗口失败")
+        QMessageBox.critical(None, t("dialog.error.title"), t("dialog.error_text_crash"))
+        return 1
     return app.exec()

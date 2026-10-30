@@ -6,8 +6,13 @@ import threading
 
 from PySide6.QtCore import QThread, Signal
 
+from modchecker.i18n import t
+
+from modchecker.logging_setup import get_logger
 from modchecker.net import Cancelled, HttpClient
 from modchecker.updater import ModUpdater, UpdateOutcome
+
+log = get_logger("updater")
 
 
 class UpdateWorker(QThread):
@@ -38,7 +43,9 @@ class UpdateWorker(QThread):
                 except Cancelled:
                     break
                 except Exception as exc:  # 单个失败不影响其余模组
-                    outcome = UpdateOutcome(result, False, f"意外错误：{exc}")
+                    log.exception("更新 %s 时出错", result.title)
+                    outcome = UpdateOutcome(result, False,
+                                            t("update.unexpected", error=exc))
                 outcomes.append(outcome)
                 self.item_done.emit(outcome)
         finally:
