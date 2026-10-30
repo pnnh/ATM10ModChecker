@@ -284,9 +284,13 @@ To cut a release:
 
 ```bash
 # bump the version in modchecker/__init__.py first
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.2.0
+git push origin v1.2.0
 ```
+
+Release notes are written by hand in `.github/release-notes/v<tag>.md`; the workflow prepends them
+to the download table, the provenance section and GitHub's generated changelog. A missing notes
+file is not an error — the release then carries the generated changelog only.
 
 Manual builds:
 

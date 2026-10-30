@@ -8,6 +8,6 @@
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 APP_NAME = "ATM10 Mod Checker"          # 英文固定名：窗口标题走 i18n，这里用于应用标识
 APP_ID = "ATM10ModChecker"

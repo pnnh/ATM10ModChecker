@@ -264,9 +264,13 @@ ATM10ModChecker.exe                # Linux / macOS 下是可执行文件本体
 
 ```bash
 # 先修改 modchecker/__init__.py 里的版本号
-git tag v1.1.0
-git push origin v1.1.0
+git tag v1.2.0
+git push origin v1.2.0
 ```
+
+更新说明写在 `.github/release-notes/v<tag>.md`，工作流会把它放在下载表格、构建溯源与
+GitHub 自动生成的 changelog 之前。没有对应文件也不会失败，此时 Release 只带自动生成的
+changelog。
 
 本地手动打包：
 

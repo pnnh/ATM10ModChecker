@@ -227,6 +227,9 @@ jobs:
     if: needs.validate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download built files
         uses: actions/download-artifact@v4
         with:
@@ -236,37 +239,34 @@ jobs:
       - name: List files
         run: ls -lh artifacts
 
+      - name: Compose release body
+        shell: bash
+        env:
+          TAG: v${{ needs.validate.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          # 正文 = .github/release-notes/<tag>.md（手写更新说明）
+          #      + .github/release-notes/_footer.md（下载表格与构建溯源，所有版本通用）
+          # GitHub 自动生成的 changelog 会由 action-gh-release 追加在后面。
+          mkdir -p .release
+          body=.release/body.md
+          notes=".github/release-notes/${TAG}.md"
+          if [ -f "$notes" ]; then
+            cat "$notes" > "$body"
+            echo "Release notes: $notes"
+          else
+            echo "::warning::No release notes file for $TAG, only the generated changelog will be used."
+            printf '## %s\n\n' "$TAG" > "$body"
+          fi
+          printf '\n---\n\n' >> "$body"
+          sed "s|{{repository}}|${REPOSITORY}|g" .github/release-notes/_footer.md >> "$body"
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          # body_path 的内容会被放到自动生成的 changelog 前面
+          body_path: .release/body.md
           generate_release_notes: true
-          fail_on_unmatched_files: true
           append_body: true
-          body: |
-            ## Download / 下载
-
-            | Platform | File | How to run |
-            | -------- | ---- | ---------- |
-            | Windows x64 | `ATM10ModChecker-windows-x64.exe` | 双击运行 / double-click |
-            | Windows x64 | `ATM10ModChecker-windows-x64.zip` | 解压后双击 `ATM10ModChecker.exe` |
-            | Linux x64 | `ATM10ModChecker-linux-x64.zip` | 解压后 `./ATM10ModChecker` |
-            | Linux x64 | `ATM10ModChecker-linux-x64` | `chmod +x` 后运行 |
-
-            程序已自带 Python 与 Qt 运行库，无需安装任何依赖（自包含单文件）。
-            The executable bundles Python and Qt, so no extra dependencies are needed.
-
-            > **Personal hobby project / 个人兴趣项目**：mostly built together with AI assistants,
-            > not rigorously tested, and only validated against the All the Mods 10 pack.
-            > 请先备份实例再使用；其它整合包与原版实例未经验证。
-            > Licensed under AGPL-3.0-or-later — full text in the `LICENSE` file inside each archive.
-
-            ## Build provenance / 构建溯源
-
-            所有附件都附带 GitHub Artifact Attestation（SLSA build provenance）。
-            Every asset ships with a GitHub Artifact Attestation, verifiable with the GitHub CLI:
-
-            ```bash
-            gh attestation verify ATM10ModChecker-windows-x64.exe --repo ${{ github.repository }}
-            gh attestation verify ATM10ModChecker-linux-x64.zip --repo ${{ github.repository }}
-            ```
+          fail_on_unmatched_files: true
