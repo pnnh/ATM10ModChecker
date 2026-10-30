@@ -16,6 +16,7 @@ class CheckWorker(QThread):
     progress = Signal(str, int)      # 阶段描述, 百分比
     stage = Signal(str, int, int)    # 阶段描述, 已完成, 总数
     log = Signal(str)
+    result_ready = Signal(object)    # 单个 ModResult，边查边显示
     finished_ok = Signal(object)     # Report
     cancelled = Signal()
     failed = Signal(str)
@@ -38,6 +39,7 @@ class CheckWorker(QThread):
                 progress=lambda label, percent: self.progress.emit(label, percent),
                 stage=lambda label, done, total: self.stage.emit(label, done, total),
                 cancel=self._cancel_evt,
+                on_result=lambda result: self.result_ready.emit(result),
             )
             report = self._checker.run(self._directory)
         except Cancelled:

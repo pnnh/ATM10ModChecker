@@ -10,8 +10,14 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from modchecker.models import ChangeLevel
+
 _NUM_RE = re.compile(r"\d+")
 _TOKEN_RE = re.compile(r"[0-9]+|[a-zA-Z]+")
+
+# 文件名 / 版本号里的预发布标记：alpha、beta、snapshot、preview、rc1、pre233、-dev 等
+_PRERELEASE_RE = re.compile(
+    r"(?i)(?:^|[^a-z0-9])(?:alpha|beta|snapshot|preview|experimental|rc|pre|dev)(?=\d|[^a-z]|$)")
 
 # 预发布阶段权重：键值越大越“新”
 _STAGE_WEIGHTS = {
@@ -124,3 +130,37 @@ def decide(installed: str, latest: str,
     if cmp is not None:
         return cmp > 0
     return None
+
+
+def is_prerelease(*texts: str) -> bool:
+    """文本（通常是 jar 文件名或 jar 内版本号）是否带 beta/alpha 等预发布标记。"""
+    return any(_PRERELEASE_RE.search(text) for text in texts if text)
+
+
+def _semantic_numbers(text: str, mc_version: str, loader: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in _NUM_RE.findall(_strip_noise(text, mc_version, loader)))
+
+
+def change_level(installed: str, latest: str, mc_version: str = "", loader: str = "",
+                 prerelease: bool = False) -> ChangeLevel:
+    """按语义化版本号判断这次更新的量级。
+
+    只比较去掉 MC 版本 / 加载器噪声后的数字段：第一段变化为主版本，
+    第二段为次版本，第三段为修订（通常是 bug 修复），更靠后的为构建号。
+    本地走 beta/alpha 通道时不做细分，直接归为预发布更新。
+    """
+    if prerelease:
+        return ChangeLevel.PRERELEASE
+    before = _semantic_numbers(installed, mc_version, loader)
+    after = _semantic_numbers(latest, mc_version, loader)
+    if not before or not after:
+        return ChangeLevel.UNKNOWN
+    for position, level in ((0, ChangeLevel.MAJOR), (1, ChangeLevel.MINOR),
+                            (2, ChangeLevel.PATCH)):
+        left = before[position] if position < len(before) else 0
+        right = after[position] if position < len(after) else 0
+        if left != right:
+            return level
+    if before[3:] != after[3:]:
+        return ChangeLevel.BUILD
+    return ChangeLevel.UNKNOWN

@@ -276,12 +276,19 @@ class CurseForgeProvider:
                                         {"mod": mod, "file": file, "confidence": confidence})
 
     # ------------------------------------------------------------------ 最新版本
-    def latest_file(self, mod_id: int | str, game_version: str, loader: str) -> dict | None:
-        """该 MC 版本/加载器下最新的文件；优先正式版。"""
+    def latest_file(self, mod_id: int | str, game_version: str, loader: str,
+                    allow_prerelease: bool = False) -> dict | None:
+        """该 MC 版本/加载器下最新的文件。
+
+        默认只返回正式版：稳定通道的模组要跳过 beta/alpha。``allow_prerelease``
+        供本地本身就走预发布通道的模组使用。
+        """
         files = self.listing(mod_id, game_version, loader, page_size=30, index=0)
         if not files:
             return None
+        if allow_prerelease:
+            return files[0]
         for item in files:
             if item.get("releaseType") == 1:  # 1 = Release
                 return item
-        return files[0]
+        return None

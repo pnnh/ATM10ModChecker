@@ -33,6 +33,18 @@ class UpdateState(str, Enum):
     ERROR = "error"        # 查询失败
 
 
+class ChangeLevel(str, Enum):
+    """“可更新”的细化程度，按语义化版本号判断。"""
+
+    NONE = ""                  # 不是可更新状态
+    MAJOR = "major"            # 1.x.x -> 2.x.x
+    MINOR = "minor"            # 1.2.x -> 1.3.x
+    PATCH = "patch"            # 1.2.3 -> 1.2.4
+    BUILD = "build"            # 第四段及以后（构建号 / 打包号）
+    PRERELEASE = "prerelease"  # 本地走 beta/alpha 通道
+    UNKNOWN = "unknown"        # 无法按版本号细分
+
+
 SOURCE_LABELS = {
     Source.MODRINTH: "Modrinth",
     Source.CURSEFORGE: "CurseForge",
@@ -50,6 +62,15 @@ STATE_LABELS = {
     UpdateState.CURRENT: "已最新",
     UpdateState.UNKNOWN: "未知",
     UpdateState.ERROR: "查询失败",
+}
+
+CHANGE_LABELS = {
+    ChangeLevel.MAJOR: "主版本更新",
+    ChangeLevel.MINOR: "次版本更新",
+    ChangeLevel.PATCH: "bug 修复更新",
+    ChangeLevel.BUILD: "构建更新",
+    ChangeLevel.PRERELEASE: "beta/alpha 更新",
+    ChangeLevel.UNKNOWN: "可更新",
 }
 
 
@@ -83,10 +104,17 @@ class ModResult:
     project_url: str = ""
     installed_version: str = ""
     installed_date: datetime | None = None
+    installed_url: str = ""          # 当前版本的发版页面
     latest_version: str = ""
     latest_date: datetime | None = None
+    latest_url: str = ""             # 最新版本的发版页面（点开可看 changelog）
     latest_filename: str = ""
+    download_url: str = ""
+    download_filename: str = ""
+    download_sha1: str = ""
+    download_size: int = 0
     state: UpdateState = UpdateState.UNKNOWN
+    change_level: ChangeLevel = ChangeLevel.NONE
     origin: Origin = Origin.UNKNOWN
     origin_detail: str = ""
     note: str = ""
@@ -96,11 +124,18 @@ class ModResult:
         return self.state is UpdateState.OUTDATED
 
     @property
+    def can_update(self) -> bool:
+        """有更新且拿到了可下载的地址（CurseForge 部分文件不提供直链）。"""
+        return self.has_update and bool(self.download_url) and bool(self.download_filename)
+
+    @property
     def title(self) -> str:
         return self.project_title or self.jar.label
 
     @property
     def state_label(self) -> str:
+        if self.state is UpdateState.OUTDATED:
+            return CHANGE_LABELS.get(self.change_level) or STATE_LABELS[self.state]
         return STATE_LABELS[self.state]
 
     @property

@@ -52,7 +52,8 @@ class Settings:
     curseforge_api_key: str = ""    # 留空则使用公共只读代理
     include_disabled: bool = False  # 是否扫描 *.jar.disabled
     concurrency: int = 6
-    pack_zip: str = ""              # 可选的整合包 zip（本地读取 manifest.json）
+    # 用户指定的整合包原包：原始 zip，或原始 zip 解压后的纯净目录（可选）
+    pack_source: str = ""
     verify_official: bool = True    # 是否构建官方模组索引用于分类
     window_geometry: str = ""
 
@@ -74,7 +75,12 @@ def load_settings() -> Settings:
     except (OSError, ValueError):
         return Settings()
     known = {f.name for f in fields(Settings)}
-    return Settings(**{k: v for k, v in raw.items() if k in known})
+    data = {k: v for k, v in raw.items() if k in known}
+    # 兼容旧版设置里的 pack_zip 字段
+    legacy = raw.get("pack_zip")
+    if not data.get("pack_source") and isinstance(legacy, str):
+        data["pack_source"] = legacy
+    return Settings(**data)
 
 
 def save_settings(settings: Settings) -> None:

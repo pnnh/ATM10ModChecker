@@ -63,15 +63,18 @@ class SettingsDialog(QDialog):
         scan_form.addRow("网络并发数：", self.concurrency_spin)
         layout.addWidget(scan_box)
 
-        zip_box = QGroupBox("官方清单来源（可选）")
-        zip_layout = QHBoxLayout(zip_box)
-        self.zip_edit = QLineEdit(settings.pack_zip)
-        self.zip_edit.setPlaceholderText("留空则自动从 CurseForge 远程读取官方 manifest.json")
-        browse = QPushButton("浏览…")
-        browse.clicked.connect(self._pick_zip)
-        zip_layout.addWidget(self.zip_edit)
-        zip_layout.addWidget(browse)
-        layout.addWidget(zip_box)
+        pack_box = QGroupBox("整合包原包（可选，用于精确判断自带 / 手动）")
+        pack_layout = QHBoxLayout(pack_box)
+        self.pack_edit = QLineEdit(settings.pack_source)
+        self.pack_edit.setPlaceholderText("整合包原始 zip，或原始 zip 解压后的纯净目录")
+        pick_zip = QPushButton("选择 zip…")
+        pick_zip.clicked.connect(self._pick_zip)
+        pick_dir = QPushButton("选择目录…")
+        pick_dir.clicked.connect(self._pick_dir)
+        pack_layout.addWidget(self.pack_edit)
+        pack_layout.addWidget(pick_zip)
+        pack_layout.addWidget(pick_dir)
+        layout.addWidget(pack_box)
 
         hint = QLabel("提示：官方清单也会缓存，同一整合包版本只需解析一次；"
                       "清空配置目录下的 cache 可强制刷新。")
@@ -91,7 +94,12 @@ class SettingsDialog(QDialog):
     def _pick_zip(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择整合包 zip", "", "Zip 文件 (*.zip)")
         if path:
-            self.zip_edit.setText(path)
+            self.pack_edit.setText(path)
+
+    def _pick_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择整合包解压后的目录")
+        if path:
+            self.pack_edit.setText(path)
 
     def apply_to(self, settings: Settings) -> Settings:
         settings.game_version = self.mc_edit.text().strip()
@@ -102,13 +110,14 @@ class SettingsDialog(QDialog):
         settings.verify_official = self.verify_check.isChecked()
         settings.include_disabled = self.disabled_check.isChecked()
         settings.concurrency = int(self.concurrency_spin.value())
-        settings.pack_zip = self.zip_edit.text().strip()
+        settings.pack_source = self.pack_edit.text().strip()
         return settings
 
 
-def zip_path_or_none(settings: Settings) -> Path | None:
-    text = (settings.pack_zip or "").strip()
+def pack_source_or_none(settings: Settings) -> Path | None:
+    """整合包原包路径（zip 文件或解压目录），无效时返回 ``None``。"""
+    text = (settings.pack_source or "").strip()
     if not text:
         return None
-    path = Path(text)
-    return path if path.is_file() else None
+    path = Path(text).expanduser()
+    return path if path.is_file() or path.is_dir() else None
